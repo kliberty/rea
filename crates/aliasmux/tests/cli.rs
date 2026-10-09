@@ -214,3 +214,15 @@ fn install_links_aliases_and_dispatches_on_name() {
     assert_eq!(fs::read_dir(&dir).unwrap().count(), listed);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn patch_refuses_a_binary_that_only_contains_the_marker() {
+    // aliasmux itself carries the marker bytes in its patching code. Treating
+    // that as a slot would overwrite 4 KiB of the program, so it must refuse.
+    let dir = scratch("patch-guard");
+    let out = bin().args(["patch", "--stub", env!("CARGO_BIN_EXE_aliasmux"), "--out"]).arg(&dir).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("not an aliasmux stub"), "{}", stderr(&out));
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -1,14 +1,23 @@
-[package]
-name = "aliasmux"
-version = "0.1.0"
-edition = "2024"
-description = "Compiled command aliases: numbered arguments and real pipelines, no shell"
+# aliasmux workspace: one runtime (crates/core), four ways to package aliases.
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared", "crates/single"]
+# Plain `cargo build` / `cargo test` skip the two crates that only make sense
+# with special settings: `shared` needs `-C prefer-dynamic`, and `single`
+# needs ALIASMUX_NAME. scripts/build_variants.py builds those explicitly.
+default-members = ["crates/core", "crates/aliasmux", "crates/stub"]
 
-[dependencies]
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+
+[workspace.dependencies]
+aliasmux-core = { path = "crates/core" }
+aliasmux-shared = { path = "crates/shared" }
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.190"
 
-# Small, fast-starting binary. None of these change behavior.
+# Small, fast-starting static binaries. None of these change behavior.
 [profile.release]
 # No unwinding machinery; a panic is a bug here, so aborting is fine.
 panic = "abort"
@@ -16,3 +25,11 @@ lto = true
 # Arbitrary trade-off: slower builds for slightly better LTO.
 codegen-units = 1
 strip = true
+
+# For the shared-library variant. Constraint on change: rustc refuses LTO
+# together with `-C prefer-dynamic`, and the shared libstd is built with
+# panic=unwind, so both must differ from `release`.
+[profile.release-dyn]
+inherits = "release"
+lto = false
+panic = "unwind"

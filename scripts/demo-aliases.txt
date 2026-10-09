@@ -1,0 +1,13 @@
+# Demo alias file for comparing variants:
+#   scripts/build_variants.py --aliases scripts/demo-aliases.txt
+# The first three match aliases.txt; the rest run anywhere, without flif or
+# ffmpeg installed.
+
+flif270 = flif -d {1} - | convert -rotate 270 - - | flif -E 14 - {1}.rot.flif && mv {1}.rot.flif {1}
+mkvize = ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv
+ll = ls -la
+
+# Same shape as flif270: transform through a pipeline, then replace in place.
+shout = cat {1} | tr a-z A-Z | tee {1}.tmp && mv {1}.tmp {1}
+# Startup-cost probe: the target does nothing, so timing measures the alias.
+nop = true

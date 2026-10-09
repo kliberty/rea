@@ -17,9 +17,8 @@
 //! quoted or escaped. Accepting them silently would be worse: a template written
 //! as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
 //!
-//! Constraint on change: this module must depend only on `std`, because
-//! `build.rs` also compiles it (via `#[path]`) to validate the alias file at
-//! build time.
+//! Build scripts also use this module (as a build-dependency) to validate
+//! templates at build time, so errors here surface as build failures.
 
 use std::ffi::OsString;
 use std::fmt;

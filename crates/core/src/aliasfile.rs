@@ -3,9 +3,6 @@
 //! Format: one alias per line, `name = template`. Blank lines and lines whose
 //! first non-blank character is `#` are ignored. Everything after the first `=`
 //! is the template, so templates may contain `=` freely (`--crf=20`).
-//!
-//! Constraint on change: like `template.rs`, this module is also compiled into
-//! `build.rs` via `#[path]`, so it must depend only on `std`.
 
 use std::collections::HashMap;
 

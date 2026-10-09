@@ -1,0 +1,13 @@
+[package]
+name = "aliasmux-shared"
+description = "The aliasmux runtime as a Rust dylib, for stubs that link it dynamically"
+version.workspace = true
+edition.workspace = true
+
+# A Rust-ABI shared library. Constraint: every binary that loads it must be
+# built by the exact same rustc, together with the matching libstd.so.
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+aliasmux-core.workspace = true

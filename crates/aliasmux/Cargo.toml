@@ -1,0 +1,13 @@
+[package]
+name = "aliasmux"
+description = "Compiled command aliases: numbered arguments and real pipelines, no shell"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aliasmux-core.workspace = true
+clap.workspace = true
+
+# build.rs validates the alias file with the real parser.
+[build-dependencies]
+aliasmux-core.workspace = true

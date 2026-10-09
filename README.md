@@ -13,23 +13,47 @@ mkvize  = ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv
 ll      = ls -la
 ```
 
-## Build and install
+## Packaging variants
+
+The runtime lives in `crates/core`; the other crates only differ in how a
+template reaches it:
+
+| Variant | Crate | Each alias is | Needs at run time |
+|---|---|---|---|
+| multicall | `crates/aliasmux` | a symlink; argv[0] picks the template | the one binary |
+| patched stub | `crates/stub` | a copy of a prebuilt stub with the template written into it | nothing |
+| shared library | `crates/stub` + `crates/shared` | a small patched stub linking the runtime `.so` | `lib/*.so` beside it, same rustc |
+| single | `crates/single` | its own compiled binary (like alias_maker.py) | nothing |
+
+Build all four side by side into `out/`:
 
 ```
-cargo build --release --target x86_64-unknown-linux-musl   # fully static
-target/x86_64-unknown-linux-musl/release/aliasmux install ~/.local/bin
+scripts/build_variants.py                       # static variants via musl
+scripts/build_variants.py --target x86_64-unknown-linux-gnu   # static glibc instead
 ```
 
-`rustup target add x86_64-unknown-linux-musl` first if you don't have it. A
-plain `cargo build --release` also works, but links glibc and libgcc_s
-dynamically.
+`rustup target add x86_64-unknown-linux-musl` first for the default. The
+shared-library variant always uses the gnu target: Rust doesn't support dylibs
+on musl.
 
-Templates are parsed at build time, so a typo fails the build with a caret
-under the problem. Set `ALIASMUX_ALIASES=path/to/file` to keep the definitions
-outside the crate (a dotfiles repo, say).
+For day-to-day use, pick one:
 
-After editing aliases, rebuild and run `install` again. Add `--prune` to remove
-links for aliases you deleted.
+```
+# multicall
+cargo build --release
+target/release/aliasmux install ~/.local/bin
+
+# patched stubs: no compiler needed per alias, only for the stub itself
+target/release/aliasmux patch --stub target/release/aliasmux-stub --out ~/.local/bin
+aliasmux inspect ~/.local/bin/flif270      # read the definition back out
+```
+
+Templates are parsed at build time (and again by `patch`), so a typo fails
+with a caret under the problem. Set `ALIASMUX_ALIASES=path/to/file` to keep the
+definitions outside the repo (a dotfiles repo, say).
+
+After editing aliases, rebuild and run `install` again (`--prune` removes links
+for deleted aliases) or `patch` again.
 
 ## Template syntax
 
@@ -78,6 +102,8 @@ aliasmux explain flif270 'a b.flif'   # print what would run, quoted
 aliasmux eval 'printf [%s] {2..}' a b c   # try a template before adding it
 aliasmux run flif270 pic.flif      # run without the symlink
 aliasmux install [--force] [--prune] DIR
+aliasmux patch --stub STUB --out DIR [NAMES...]
+aliasmux inspect FILE                # definition stored in a patched alias
 ```
 
 ## Migrating from alias_maker.py

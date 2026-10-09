@@ -4,10 +4,39 @@ version = 4
 
 [[package]]
 name = "aliasmux"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "aliasmux-core",
  "clap",
+]
+
+[[package]]
+name = "aliasmux-core"
+version = "0.2.0"
+dependencies = [
  "libc",
+]
+
+[[package]]
+name = "aliasmux-shared"
+version = "0.2.0"
+dependencies = [
+ "aliasmux-core",
+]
+
+[[package]]
+name = "aliasmux-single"
+version = "0.2.0"
+dependencies = [
+ "aliasmux-core",
+]
+
+[[package]]
+name = "aliasmux-stub"
+version = "0.2.0"
+dependencies = [
+ "aliasmux-core",
+ "aliasmux-shared",
 ]
 
 [[package]]

@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-use crate::{ALIASES, SELF_NAME, aliasfile, run_alias, template};
+use aliasmux_core::{aliasfile, run_alias, slot, template};
+
+use crate::{ALIASES, SELF_NAME};
 
 /// Compiled command aliases: numbered arguments and real pipelines, no shell.
 #[derive(Parser)]
@@ -58,6 +60,22 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
+    /// Make one standalone executable per alias by patching a stub binary.
+    Patch {
+        /// The stub to copy (aliasmux-stub, static or dynamic build).
+        #[arg(long)]
+        stub: PathBuf,
+        /// Directory for the generated executables.
+        #[arg(long)]
+        out: PathBuf,
+        /// Aliases to generate; all of them if none are given.
+        names: Vec<String>,
+    },
+    /// Print the alias definition stored in a patched executable.
+    Inspect {
+        /// A file produced by `patch`.
+        file: PathBuf,
+    },
     /// Create a symlink in DIR for every alias, pointing at this binary.
     Install {
         /// Directory to put the links in, normally one on your PATH.
@@ -88,6 +106,8 @@ pub fn main() -> ! {
         Cmd::Eval { template, args } => run_alias(SELF_NAME, &template, &args),
         Cmd::Explain { is_template, target, args } => explain(is_template, &target, &args),
         Cmd::Install { dir, force, prune } => install(&dir, force, prune),
+        Cmd::Patch { stub, out, names } => patch(&stub, &out, &names),
+        Cmd::Inspect { file } => inspect(&file),
     };
     std::process::exit(status);
 }
@@ -302,4 +322,115 @@ fn install(dir: &Path, force: bool, prune: bool) -> i32 {
     }
     // Any failure makes the whole command fail, so scripts notice.
     if failures > 0 { 1 } else { 0 }
+}
+
+/// `patch`: write one patched copy of the stub per alias.
+///
+/// :param stub: path to the stub binary
+/// :param out: output directory (created if missing)
+/// :param names: aliases to generate, or empty for all
+/// :return: exit status; 1 if any alias failed
+fn patch(stub: &Path, out: &Path, names: &[String]) -> i32 {
+    // Read the stub once and locate its slot; every output is a copy of it.
+    let image = match fs::read(stub) {
+        Ok(image) => image,
+        Err(err) => return fail(&format!("cannot read {}: {err}", stub.display())),
+    };
+    let offset = match slot::locate(&image) {
+        Ok(offset) => offset,
+        Err(err) => return fail(&format!("{}: {err}", stub.display())),
+    };
+    // A marker alone is not proof of a slot: any binary containing the
+    // patching code (aliasmux itself) has the marker bytes as a constant, and
+    // overwriting there would corrupt the program. A real slot is empty (a
+    // fresh stub) or holds a valid alias (re-patching an existing alias).
+    if let Err(slot::SlotError::Corrupt(why)) = slot::decode_at(&image, offset) {
+        return fail(&format!("{}: not an aliasmux stub (marker found, but {why})", stub.display()));
+    }
+    if let Err(err) = fs::create_dir_all(out) {
+        return fail(&format!("cannot create {}: {err}", out.display()));
+    }
+
+    // No names means every alias; otherwise only the named ones, in order.
+    let all = entries();
+    let selected: Vec<(&str, &str)> = if names.is_empty() {
+        all.iter().map(|e| (e.name, e.template)).collect()
+    } else {
+        let mut selected = Vec::new();
+        for name in names {
+            match aliasfile::find(ALIASES, name) {
+                Some(template) => selected.push((name.as_str(), template)),
+                None => return fail(&format!("no alias named `{name}`")),
+            }
+        }
+        selected
+    };
+
+    let mut failures = 0;
+    for (name, template) in selected {
+        // Encoding fails only on size; the template itself was validated at
+        // build time, like every embedded one.
+        let bytes = match slot::encode(name, template) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                failures += fail(&err);
+                continue;
+            }
+        };
+        let mut copy = image.clone();
+        copy[offset..offset + slot::SIZE].copy_from_slice(&bytes);
+        // Write to a temporary name, then rename: replacing a running
+        // executable in place fails with ETXTBSY, and a half-written file
+        // must never be left under the alias's name.
+        let target = out.join(name);
+        let temp = out.join(format!(".{name}.tmp"));
+        let written = write_executable(&temp, &copy).and_then(|()| fs::rename(&temp, &target));
+        match written {
+            Ok(()) => println!("patched {} ({} bytes)", target.display(), copy.len()),
+            Err(err) => {
+                let _ = fs::remove_file(&temp);
+                failures += fail(&format!("cannot write {}: {err}", target.display()));
+            }
+        }
+    }
+    if failures > 0 { 1 } else { 0 }
+}
+
+/// Write bytes to a new file with mode 0755.
+///
+/// :param path: destination; replaced if it exists
+/// :param bytes: contents
+/// :return: I/O result
+fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Set the mode at creation so the file is never briefly non-executable.
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(path)?;
+    file.write_all(bytes)
+}
+
+/// `inspect`: show the definition stored in a patched executable.
+///
+/// :param file: the executable
+/// :return: exit status
+fn inspect(file: &Path) -> i32 {
+    let image = match fs::read(file) {
+        Ok(image) => image,
+        Err(err) => return fail(&format!("cannot read {}: {err}", file.display())),
+    };
+    // Same lookup the stub does at run time, but on the file instead of memory.
+    let offset = match slot::locate(&image) {
+        Ok(offset) => offset,
+        Err(err) => return fail(&format!("{}: {err}", file.display())),
+    };
+    match slot::decode_at(&image, offset) {
+        Ok((name, template)) => {
+            println!("{name} = {template}");
+            0
+        }
+        // A marker with garbage after it is a false positive (see `patch`),
+        // not a damaged alias, so say that rather than "corrupt".
+        Err(slot::SlotError::Corrupt(why)) => fail(&format!("{}: not a patched aliasmux executable (marker found, but {why})", file.display())),
+        Err(err) => fail(&format!("{}: {err}", file.display())),
+    }
 }

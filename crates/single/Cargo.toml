@@ -1,0 +1,12 @@
+[package]
+name = "aliasmux-single"
+description = "One alias compiled into its own static executable (template chosen by ALIASMUX_NAME)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aliasmux-core.workspace = true
+
+# build.rs looks the alias up and validates it with the real parser.
+[build-dependencies]
+aliasmux-core.workspace = true

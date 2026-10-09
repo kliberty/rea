@@ -1,0 +1,8 @@
+[package]
+name = "aliasmux-core"
+description = "aliasmux runtime: template language, alias file format, process execution"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libc.workspace = true
