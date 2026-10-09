@@ -17,8 +17,8 @@
 //! quoted or escaped. Accepting them silently would be worse: a template written
 //! as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
 //!
-//! Build scripts also use this module (as a build-dependency) to validate
-//! templates at build time, so errors here surface as build failures.
+//! `aliasmux new` and `patch` run this parser when an alias is created, so
+//! syntax errors surface then, not when the alias first runs.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -505,7 +505,7 @@ impl Parser {
                 TokenKind::Or => Op::Or,
                 TokenKind::Then => Op::Then,
                 // Unreachable given the above; reported rather than panicking
-                // because build.rs runs this code and a panic there is ugly.
+                // because the tool runs this code on user input.
                 _ => return Err(ParseError::new(token.offset, "internal error: unexpected token")),
             };
             // A trailing `;` is harmless (sh allows it), so accept it.

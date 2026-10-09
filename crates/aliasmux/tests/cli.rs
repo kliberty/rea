@@ -1,9 +1,9 @@
 //! End-to-end tests: run the real binary and check processes, pipes, exit
 //! statuses and signals.
 //!
-//! Most tests use `aliasmux eval TEMPLATE ARGS...` so they don't depend on the
-//! contents of the user's alias file. Assumption: a POSIX userland is present
-//! (printf, sort, tr, cat, tee, mv, yes, head, sh, ls).
+//! Runtime behavior is tested through `aliasmux eval TEMPLATE ARGS...`, which
+//! runs a template exactly as a patched alias would. Assumption: a POSIX
+//! userland is present (printf, sort, tr, cat, tee, mv, yes, head, sh, ls).
 
 use std::fs;
 use std::os::unix::process::ExitStatusExt;
@@ -181,7 +181,7 @@ fn libc_sigterm() -> i32 {
 #[test]
 fn explain_prints_quoted_plan() {
     let out = bin()
-        .args(["explain", "-t", "flif -d {1} - | flif -E 14 - {1}.rot && mv {1}.rot {1}", "a b"])
+        .args(["explain", "flif -d {1} - | flif -E 14 - {1}.rot && mv {1}.rot {1}", "a b"])
         .output()
         .unwrap();
     let text = stdout(&out);
@@ -189,42 +189,6 @@ fn explain_prints_quoted_plan() {
     assert!(text.contains("   flif -d 'a b' -\n"), "{text}");
     assert!(text.contains("  | flif -E 14 - 'a b.rot'\n"), "{text}");
     assert!(text.contains("&& mv 'a b.rot' 'a b'\n"), "{text}");
-}
-
-#[test]
-fn install_links_aliases_and_dispatches_on_name() {
-    let dir = scratch("install");
-    // Install creates one link per alias in the embedded file.
-    let out = bin().arg("install").arg(&dir).output().unwrap();
-    assert!(out.status.success(), "{}", stderr(&out));
-    let listed = stdout(&bin().arg("list").output().unwrap()).lines().count();
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), listed);
-
-    // A link whose alias doesn't exist reports itself as stale...
-    let stale = dir.join("not-an-alias");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_aliasmux"), &stale).unwrap();
-    let run = Command::new(&stale).output().unwrap();
-    assert_eq!(run.status.code(), Some(127));
-    assert!(stderr(&run).contains("no alias named `not-an-alias`"));
-
-    // ...and --prune removes it while leaving the real aliases in place.
-    let out = bin().arg("install").arg("--prune").arg(&dir).output().unwrap();
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(!stale.exists());
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), listed);
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn patch_refuses_a_binary_that_only_contains_the_marker() {
-    // aliasmux itself carries the marker bytes in its patching code. Treating
-    // that as a slot would overwrite 4 KiB of the program, so it must refuse.
-    let dir = scratch("patch-guard");
-    let out = bin().args(["patch", "--stub", env!("CARGO_BIN_EXE_aliasmux"), "--out"]).arg(&dir).output().unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("not an aliasmux stub"), "{}", stderr(&out));
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

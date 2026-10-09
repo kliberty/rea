@@ -12,10 +12,11 @@
 //! | 16..20     | len    | payload length, u32 little-endian; 0 = empty |
 //! | 20..20+CAP | data   | `name` + `\n` + `template`, zero padded    |
 //!
-//! Constraint on change: the static itself must be declared in the *stub*
-//! crate, never here. In the shared-library variant this crate lives in the
-//! `.so`, and a slot there would be shared by every alias rather than patched
-//! into each one.
+//! Constraint on change: the static itself must be declared in the stub
+//! binary (src/bin/aliasmux-stub.rs), never in this crate. A static here would
+//! also be linked into the `aliasmux` tool, giving it a valid empty slot, and
+//! then `patch` could no longer tell the tool from a stub (and refuse to
+//! overwrite it).
 
 use std::fmt;
 

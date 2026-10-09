@@ -1,11 +1,8 @@
-# aliasmux workspace: one runtime (crates/core), four ways to package aliases.
+# aliasmux workspace: the runtime (crates/core) and the tool that creates
+# aliases from it (crates/aliasmux, which also builds the stub).
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared", "crates/single"]
-# Plain `cargo build` / `cargo test` skip `single`: its bins exist only after
-# `aliasmux gen-single` writes them, and building one binary per alias on every
-# build would be wasteful. scripts/build_variants.py builds it explicitly.
-default-members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared"]
+members = ["crates/core", "crates/aliasmux"]
 
 [workspace.package]
 version = "0.2.0"

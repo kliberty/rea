@@ -1,15 +1,10 @@
-//! Runtime shared by every aliasmux variant: the template language, the alias
-//! file format, process execution, and the slot format for patched stubs.
+//! Runtime for aliasmux aliases: the template language, the alias file format,
+//! process execution, and the slot format that holds an alias in its stub.
 //!
-//! The variants differ only in how a template reaches [`run_alias`]:
-//!
-//! * multicall: one binary embeds the whole alias file and picks by argv[0]
-//! * patched stub: a prebuilt binary with a template written into its data
-//! * shared library: a patched C stub that calls this crate in a `.so`
-//! * single: one binary compiled per alias with its template as a constant
+//! Each alias is a copy of the `aliasmux-stub` executable with one alias
+//! written into its slot; the stub reads it back and calls [`run_alias`].
 
 pub mod aliasfile;
-pub mod build_support;
 pub mod run;
 pub mod slot;
 pub mod template;
@@ -27,8 +22,8 @@ pub const USAGE_ERROR: i32 = 2;
 /// :param args: runtime arguments, excluding the alias name
 /// :return: never; exits with the alias's outcome
 pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
-    // Templates baked in at build time were validated then, so this only fails
-    // for ad-hoc templates (`aliasmux eval`) or a corrupted patched stub.
+    // Templates are validated when an alias is created, so this only fails
+    // for ad-hoc templates (`aliasmux eval`) or a damaged stub.
     let parsed = template::parse(source).unwrap_or_else(|err| {
         eprintln!("{name}: invalid template: {}", err.render(source));
         std::process::exit(USAGE_ERROR);

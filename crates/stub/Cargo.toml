@@ -1,8 +1,0 @@
-[package]
-name = "aliasmux-stub"
-description = "Prebuilt static aliasmux executable that `aliasmux patch` copies and fills with one alias"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-aliasmux-core.workspace = true

@@ -1,4 +1,1 @@
 /target
-/out
-# Written by `aliasmux gen-single`; see crates/single/Cargo.toml.
-/crates/single/src/bin/

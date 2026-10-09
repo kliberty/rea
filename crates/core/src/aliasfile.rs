@@ -42,14 +42,17 @@ fn split_line(raw: &str) -> Option<Result<(&str, &str), &'static str>> {
 
 /// Check that a name is usable as a file name on `PATH`.
 ///
+/// Used for names from the alias file and from `aliasmux new` alike, so both
+/// accept exactly the same names.
+///
 /// :param name: the proposed alias name
 /// :return: an error message, or `None` if the name is fine
-fn name_problem(name: &str) -> Option<String> {
+pub fn name_problem(name: &str) -> Option<String> {
     // The character set is an arbitrary conservative choice: safe in file names
     // and in any shell without quoting. Widen it if you need to.
     let allowed = |c: char| c.is_ascii_alphanumeric() || "._+-".contains(c);
     if name.is_empty() {
-        Some("missing alias name before `=`".into())
+        Some("the alias name is empty".into())
     } else if let Some(bad) = name.chars().find(|&c| !allowed(c)) {
         Some(format!("alias name `{name}` contains `{bad}`; use letters, digits, `.`, `_`, `+` or `-`"))
     } else if name.starts_with(['-', '.']) {
@@ -99,20 +102,8 @@ pub fn parse(src: &str) -> Result<Vec<Entry<'_>>, Vec<FileError>> {
         }
         entries.push(Entry { name, template, line });
     }
-    // Report all problems together so a build fails once, not once per typo.
+    // Report all problems together, so one run shows every typo at once.
     if errors.is_empty() { Ok(entries) } else { Err(errors) }
-}
-
-/// Find one alias's template without validating the rest of the file.
-///
-/// Assumption: the file was already validated (build.rs does this for the
-/// embedded copy), so a cheap scan is enough and avoids allocating.
-///
-/// :param src: file contents
-/// :param name: alias to look up
-/// :return: the template source, if defined
-pub fn find<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-    src.lines().filter_map(split_line).filter_map(Result::ok).find(|(n, _)| *n == name).map(|(_, template)| template)
 }
 
 #[cfg(test)]
@@ -126,9 +117,6 @@ mod tests {
         // Templates keep inner `=` and lose surrounding whitespace.
         assert_eq!(entries[0], Entry { name: "ll", template: "ls -la", line: 3 });
         assert_eq!(entries[1], Entry { name: "enc", template: "ffmpeg -crf=20 {1}", line: 4 });
-        // Lookup agrees with the full parse.
-        assert_eq!(find(src, "enc"), Some("ffmpeg -crf=20 {1}"));
-        assert_eq!(find(src, "nope"), None);
     }
 
     #[test]

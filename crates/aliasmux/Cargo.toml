@@ -1,13 +1,14 @@
 [package]
 name = "aliasmux"
-description = "Compiled command aliases: numbered arguments and real pipelines, no shell"
+description = "Command aliases with numbered arguments and real pipelines, no shell"
 version.workspace = true
 edition.workspace = true
+
+# Two binaries, built side by side: `aliasmux` (src/main.rs), the tool that
+# creates aliases, and `aliasmux-stub` (src/bin/aliasmux-stub.rs), the
+# executable it copies and patches once per alias. clap is linked only into
+# `aliasmux`, since the stub never references it.
 
 [dependencies]
 aliasmux-core.workspace = true
 clap.workspace = true
-
-# build.rs validates the alias file with the real parser.
-[build-dependencies]
-aliasmux-core.workspace = true
