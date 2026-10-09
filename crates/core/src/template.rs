@@ -5,7 +5,7 @@
 //!
 //! * words, split on unquoted whitespace
 //! * `'single'` quotes (fully literal) and `"double"` quotes (literal except for
-//!   the escapes `\"`, `\\`, `\{`, `\}` and for argument references)
+//!   argument references and the escapes `\"`, `\\`, `\{`, `\}`, `\$`, `` \` ``)
 //! * `\x` outside quotes, which makes `x` literal
 //! * argument references: `{N}` (the Nth argument, 1-based), `{N..}` (the Nth
 //!   argument onward, one word each) and `{@}` (the same as `{1..}`)
@@ -14,8 +14,9 @@
 //!
 //! Characters that a shell treats specially but this language does not (`$`,
 //! backticks, globs, redirections, parentheses, a lone `&`) are rejected unless
-//! quoted or escaped. Accepting them silently would be worse: a template written
-//! as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
+//! escaped or quoted. `$` and backticks are rejected inside double quotes too,
+//! since sh expands them there. Accepting them silently would be worse: a
+//! template written as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
 //!
 //! `aliasmux new` and `patch` run this parser when an alias is created, so
 //! syntax errors surface then, not when the alias first runs.
@@ -386,7 +387,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                         // here; elsewhere it stays literal, like sh, so regexes
                         // such as "\d+" survive unchanged.
                         Some((_, '\\')) => match chars.next() {
-                            Some((_, ch @ ('"' | '\\' | '{' | '}'))) => builder.push_char(ch),
+                            Some((_, ch @ ('"' | '\\' | '{' | '}' | '$' | '`'))) => builder.push_char(ch),
                             Some((_, ch)) => {
                                 builder.push_char('\\');
                                 builder.push_char(ch);
@@ -397,6 +398,15 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                         Some((open, '{')) => {
                             let r = read_ref(&mut chars, open)?;
                             builder.push_ref(r, open)?;
+                        }
+                        // `$` and backticks expand inside double quotes in sh, so
+                        // "$1" is the shell habit most likely to slip through;
+                        // treating it as literal would silently pass `$1` on.
+                        Some((at, ch @ ('$' | '`'))) => {
+                            return Err(ParseError::new(
+                                at,
+                                format!("`{ch}` is not expanded here, even in double quotes; use `{{1}}`, `{{2}}`, ... for arguments, or write `\\{ch}` (or single quotes) to pass it literally"),
+                            ));
                         }
                         Some((_, ch)) => builder.push_char(ch),
                         None => return Err(ParseError::new(offset, "unterminated double quote")),
@@ -798,6 +808,8 @@ mod tests {
         // Each case: source, and the byte offset the error must report.
         let cases = [
             ("echo $1", 5),
+            (r#"ffmpeg -i "$1""#, 11),
+            (r#"echo "a `date`""#, 8),
             ("echo {0}", 5),
             ("echo {x}", 5),
             ("echo {1", 5),
@@ -823,6 +835,9 @@ mod tests {
         // Escaping or quoting gets any reserved character through verbatim.
         assert_eq!(plan(r"find . -exec rm '{}' \;", &[]).head[0], os(&["find", ".", "-exec", "rm", "{}", ";"]));
         assert_eq!(plan(r"echo \$HOME '*' \{1\}", &[]).head[0], os(&["echo", "$HOME", "*", "{1}"]));
+        // Inside double quotes `$` and backticks need a backslash, as in sh;
+        // single quotes keep them literal with no escaping at all.
+        assert_eq!(plan(r#"echo "\$1 \`x\`" '$2'"#, &[]).head[0], os(&["echo", "$1 `x`", "$2"]));
     }
 
     #[test]
