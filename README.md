@@ -22,7 +22,7 @@ template reaches it:
 |---|---|---|---|
 | multicall | `crates/aliasmux` | a symlink; argv[0] picks the template | the one binary |
 | patched stub | `crates/stub` | a copy of a prebuilt stub with the template written into it | nothing |
-| shared library | `crates/stub` + `crates/shared` | a small patched stub linking the runtime `.so` | `lib/*.so` beside it, same rustc |
+| shared library | `crates/shared` (cdylib + `c/stub.c`) | a ~20 KB patched C stub calling the runtime `.so` | `lib/libaliasmux_shared.so` beside it |
 | single | `crates/single` | its own compiled binary (like alias_maker.py) | nothing |
 
 Build all four side by side into `out/`:
@@ -33,8 +33,13 @@ scripts/build_variants.py --target x86_64-unknown-linux-gnu   # static glibc ins
 ```
 
 `rustup target add x86_64-unknown-linux-musl` first for the default. The
-shared-library variant always uses the gnu target: Rust doesn't support dylibs
-on musl.
+shared-library variant always uses the gnu target, and needs a C compiler for
+its stub.
+
+The shared library is a `cdylib`: its whole interface is one C function,
+`aliasmux_run_slot` (declared in `crates/shared/c/aliasmux.h`), with Rust's std
+linked inside. So stubs can be written in any language, and the library can be
+rebuilt with any rustc without touching existing aliases.
 
 For day-to-day use, pick one:
 

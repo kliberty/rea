@@ -1,17 +1,8 @@
 [package]
 name = "aliasmux-stub"
-description = "Prebuilt aliasmux executable that `aliasmux patch` copies and fills with one alias"
+description = "Prebuilt static aliasmux executable that `aliasmux patch` copies and fills with one alias"
 version.workspace = true
 edition.workspace = true
 
-# Exactly one of these must be enabled. `static` links the runtime into the
-# stub; `dynamic` links it from libaliasmux_shared.so instead (build with
-# `--no-default-features --features dynamic` and `-C prefer-dynamic`).
-[features]
-default = ["static"]
-static = ["dep:aliasmux-core"]
-dynamic = ["dep:aliasmux-shared"]
-
 [dependencies]
-aliasmux-core = { workspace = true, optional = true }
-aliasmux-shared = { workspace = true, optional = true }
+aliasmux-core.workspace = true

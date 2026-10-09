@@ -5,7 +5,7 @@
 //!
 //! * multicall: one binary embeds the whole alias file and picks by argv[0]
 //! * patched stub: a prebuilt binary with a template written into its data
-//! * shared library: a patched stub that links this crate as a `.so`
+//! * shared library: a patched C stub that calls this crate in a `.so`
 //! * single: one binary compiled per alias with its template as a constant
 
 pub mod aliasfile;

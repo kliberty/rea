@@ -5,7 +5,7 @@ Output layout (under ``--out``, default ``out/``)::
 
     multicall/  aliasmux + one symlink per alias
     stub/       one patched static executable per alias
-    dylib/      one patched dynamic executable per alias, plus lib/*.so
+    cdylib/     one patched C stub per alias, plus lib/libaliasmux_shared.so
     single/     one separately compiled static executable per alias
 
 All four run the same runtime (``crates/core``) on the same alias file.
@@ -109,40 +109,38 @@ def build_multicall_and_stub(target: str, out: Path) -> tuple[Path, Path]:
     return built / "aliasmux", built / "aliasmux-stub"
 
 
-def build_dynamic_stub(out: Path) -> Path:
-    """Build the stub against the runtime as a Rust dylib, and stage its libs.
+def build_cdylib_stub(out: Path) -> Path:
+    """Build the runtime as a C-ABI shared library plus the C stub that uses it.
 
-    Constraint on change: this always uses the host's gnu target, because Rust
-    does not support the dylib crate type on musl.
+    The library is staged in ``cdylib-lib-staging/``, which ``main`` moves to
+    ``cdylib/lib/`` once the stubs are patched.
+
+    Constraint on change: this always uses the host's gnu target with no
+    crt-static flag, because a cdylib can't be linked with a static C runtime.
 
     :param out: output root
-    :return: path of the built dynamic stub
+    :return: path of the built C stub
     """
     host = run(["rustc", "--print", "host-tuple"], capture=True).strip()
-    # A separate target dir, because different RUSTFLAGS would otherwise
-    # invalidate the static build's cache on every run.
-    target_dir = ROOT / "target" / "dyn"
-    # prefer-dynamic links libstd as a .so too (it must appear only once, and
-    # the runtime .so already uses the shared one). The rpath makes each
-    # alias find its libraries in lib/ next to itself, wherever it's copied.
-    rustflags = "-C prefer-dynamic -C link-arg=-Wl,-rpath,$ORIGIN/lib"
-    run(["cargo", "build", "--profile", "release-dyn", "--target", host, "-p", "aliasmux-stub",
-         "--no-default-features", "--features", "dynamic"],
-        env={"RUSTFLAGS": rustflags, "CARGO_TARGET_DIR": str(target_dir)})
-    stub = target_dir / host / "release-dyn" / "aliasmux-stub"
+    # A separate target dir, because the static builds use different
+    # RUSTFLAGS, and sharing one dir would invalidate the cache every run.
+    target_dir = ROOT / "target" / "cdylib"
+    # The normal release profile works: a cdylib carries its own std, so LTO
+    # and panic=abort are fine (unlike a Rust-ABI dylib).
+    run(["cargo", "build", "--release", "--target", host, "-p", "aliasmux-shared"],
+        env={"CARGO_TARGET_DIR": str(target_dir)})
+    built = target_dir / host / "release"
 
-    # Stage exactly the libraries the stub needs, found where they were built:
-    # libstd in the toolchain, libaliasmux_shared among the build outputs.
-    lib = fresh_dir(out / "dylib-lib-staging")
-    search = [Path(run(["rustc", "--print", "target-libdir"], capture=True).strip()), stub.parent / "deps"]
-    for name in needed_libraries(stub):
-        # System libraries (libc, libgcc_s) stay with the system.
-        if not (name.startswith("libstd-") or name.startswith("libaliasmux_shared")):
-            continue
-        found = next((d / name for d in search if (d / name).exists()), None)
-        if found is None:
-            sys.exit(f"cannot find {name} for the dynamic stub")
-        shutil.copy2(found, lib / name)
+    # Compile the C stub against the library. The rpath makes each alias look
+    # for the library in lib/ next to itself, wherever the pair is copied.
+    c_dir = ROOT / "crates" / "shared" / "c"
+    stub = built / "aliasmux-cstub"
+    run(["cc", "-O2", "-Wall", "-Wextra", "-o", str(stub), str(c_dir / "stub.c"), f"-I{c_dir}",
+         f"-L{built}", "-laliasmux_shared", "-Wl,-rpath,$ORIGIN/lib"])
+
+    # Only our own library needs shipping; libc and friends stay with the system.
+    lib = fresh_dir(out / "cdylib-lib-staging")
+    shutil.copy2(built / "libaliasmux_shared.so", lib / "libaliasmux_shared.so")
     return stub
 
 
@@ -193,7 +191,7 @@ def report(out: Path, names: list[str]) -> None:
     variants = {
         "multicall": ([out / "multicall" / "aliasmux"], out / "multicall" / "aliasmux"),
         "stub": ([out / "stub" / n for n in names], out / "stub" / names[0]),
-        "dylib": ([out / "dylib" / n for n in names] + sorted((out / "dylib" / "lib").iterdir()), out / "dylib" / names[0]),
+        "cdylib": ([out / "cdylib" / n for n in names] + sorted((out / "cdylib" / "lib").iterdir()), out / "cdylib" / names[0]),
         "single": ([out / "single" / n for n in names], out / "single" / names[0]),
     }
     print(f"\n{len(names)} aliases\n")
@@ -227,10 +225,10 @@ def main() -> None:
     names = alias_names(aliasmux)
     patch_variant(aliasmux, static_stub, out / "stub")
 
-    dynamic_stub = build_dynamic_stub(out)
-    patch_variant(aliasmux, dynamic_stub, out / "dylib")
-    # The libraries go in dylib/lib, matching the stub's $ORIGIN/lib rpath.
-    (out / "dylib-lib-staging").rename(out / "dylib" / "lib")
+    c_stub = build_cdylib_stub(out)
+    patch_variant(aliasmux, c_stub, out / "cdylib")
+    # The library goes in cdylib/lib, matching the stub's $ORIGIN/lib rpath.
+    (out / "cdylib-lib-staging").rename(out / "cdylib" / "lib")
 
     build_singles(args.target, names, out)
     report(out, names)

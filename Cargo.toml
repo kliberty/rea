@@ -2,10 +2,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared", "crates/single"]
-# Plain `cargo build` / `cargo test` skip the two crates that only make sense
-# with special settings: `shared` needs `-C prefer-dynamic`, and `single`
-# needs ALIASMUX_NAME. scripts/build_variants.py builds those explicitly.
-default-members = ["crates/core", "crates/aliasmux", "crates/stub"]
+# Plain `cargo build` / `cargo test` skip `single`, which only makes sense
+# with ALIASMUX_NAME set. scripts/build_variants.py builds it once per alias.
+default-members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared"]
 
 [workspace.package]
 version = "0.2.0"
@@ -13,7 +12,6 @@ edition = "2024"
 
 [workspace.dependencies]
 aliasmux-core = { path = "crates/core" }
-aliasmux-shared = { path = "crates/shared" }
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.190"
 
@@ -26,10 +24,3 @@ lto = true
 codegen-units = 1
 strip = true
 
-# For the shared-library variant. Constraint on change: rustc refuses LTO
-# together with `-C prefer-dynamic`, and the shared libstd is built with
-# panic=unwind, so both must differ from `release`.
-[profile.release-dyn]
-inherits = "release"
-lto = false
-panic = "unwind"

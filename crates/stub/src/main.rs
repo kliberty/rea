@@ -1,23 +1,12 @@
 //! A generic alias executable with an empty template slot.
 //!
 //! `aliasmux patch --stub <this> --out DIR` copies this binary once per alias
-//! and writes the alias into [`SLOT`]. Each copy is then a standalone
+//! and writes the alias into [`SLOT`]. Each copy is then a standalone static
 //! executable: its name on disk doesn't matter, and nothing else is needed at
-//! run time (apart from the `.so` files in the dynamic build).
+//! run time. (The shared-library variant uses the C stub in crates/shared/c
+//! instead, with the same slot format.)
 
-// Exactly one runtime source; both at once would link the runtime twice.
-#[cfg(all(feature = "static", feature = "dynamic"))]
-compile_error!("enable exactly one of the `static` and `dynamic` features");
-#[cfg(not(any(feature = "static", feature = "dynamic")))]
-compile_error!("enable one of the `static` or `dynamic` features");
-
-// The runtime under one name, whichever way it is linked.
-#[cfg(feature = "static")]
-use aliasmux_core as runtime;
-#[cfg(feature = "dynamic")]
-use aliasmux_shared as runtime;
-
-use runtime::slot::{self, Slot};
+use aliasmux_core::slot::{self, Slot};
 
 /// The template slot that `aliasmux patch` overwrites in each copy.
 ///
@@ -37,7 +26,7 @@ fn main() {
     let current: &Slot = std::hint::black_box(&SLOT);
     match slot::decode(current) {
         // The rest of argv (minus our own name) goes to the alias.
-        Ok((name, template)) => runtime::run_alias(name, template, &std::env::args_os().skip(1).collect::<Vec<_>>()),
+        Ok((name, template)) => aliasmux_core::run_alias(name, template, &std::env::args_os().skip(1).collect::<Vec<_>>()),
         // Running the raw stub, or a damaged copy: explain, using the shell's
         // "not executable" status since there is nothing to run.
         Err(err) => {

@@ -36,7 +36,6 @@ name = "aliasmux-stub"
 version = "0.2.0"
 dependencies = [
  "aliasmux-core",
- "aliasmux-shared",
 ]
 
 [[package]]
