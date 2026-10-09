@@ -28,11 +28,14 @@ template reaches it:
 Build all four side by side into `out/`:
 
 ```
-scripts/build_variants.py                       # static variants via musl
-scripts/build_variants.py --target x86_64-unknown-linux-gnu   # static glibc instead
+scripts/build_variants.py                       # static, via musl
+scripts/build_variants.py --target x86_64-unknown-linux-gnu   # dynamic glibc
+scripts/build_variants.py --target x86_64-unknown-linux-gnu --static-glibc
 ```
 
-`rustup target add x86_64-unknown-linux-musl` first for the default. The
+`rustup target add x86_64-unknown-linux-musl` first for the default. Dynamic
+glibc needs nothing extra; `--static-glibc` needs glibc's static libraries
+(`libc6-dev` on Debian/Ubuntu, `glibc-static` on Fedora). The
 shared-library variant always uses the gnu target, and needs a C compiler for
 its stub.
 

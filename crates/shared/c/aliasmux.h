@@ -18,9 +18,25 @@
 /* The 16 marker bytes (no terminating NUL is stored); must equal slot::MARKER. */
 #define ALIASMUX_SLOT_MARKER "aliasmux:slot:v1"
 
+/*
+ * Marks a char array that intentionally holds no NUL terminator. The marker is
+ * matched as 16 raw bytes, so initializing it from the 16-character literal
+ * above (dropping the literal's NUL) is correct; GCC 15+ warns about that
+ * (-Wunterminated-string-initialization) unless the array carries this
+ * attribute. Compilers without the attribute get an empty definition.
+ */
+#if defined(__has_attribute)
+#  if __has_attribute(nonstring)
+#    define ALIASMUX_NONSTRING __attribute__((nonstring))
+#  endif
+#endif
+#ifndef ALIASMUX_NONSTRING
+#  define ALIASMUX_NONSTRING
+#endif
+
 /* The template slot. Only byte arrays, so there is no padding on any ABI. */
 struct aliasmux_slot {
-    unsigned char marker[16];                       /* ALIASMUX_SLOT_MARKER */
+    unsigned char marker[16] ALIASMUX_NONSTRING;    /* ALIASMUX_SLOT_MARKER */
     unsigned char len[4];                           /* payload length, u32 little-endian; 0 = unpatched */
     unsigned char data[ALIASMUX_SLOT_CAPACITY];     /* "name\ntemplate", zero padded */
 };

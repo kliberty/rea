@@ -18,7 +18,8 @@
  * at run time, whatever the file holds.
  *
  * The initializer spells out the 16 marker bytes via a string literal; C
- * allows a 16-char literal to fill a 16-byte array exactly, without a NUL.
+ * allows a 16-char literal to fill a 16-byte array exactly, without a NUL
+ * (the field is marked ALIASMUX_NONSTRING to say that is intended).
  */
 __attribute__((used))
 static const struct aliasmux_slot slot = {

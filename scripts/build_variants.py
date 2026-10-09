@@ -4,9 +4,9 @@
 Output layout (under ``--out``, default ``out/``)::
 
     multicall/  aliasmux + one symlink per alias
-    stub/       one patched static executable per alias
+    stub/       one patched Rust stub per alias
     cdylib/     one patched C stub per alias, plus lib/libaliasmux_shared.so
-    single/     one separately compiled static executable per alias
+    single/     one separately compiled executable per alias
 
 All four run the same runtime (``crates/core``) on the same alias file.
 """
@@ -80,27 +80,31 @@ def fresh_dir(path: Path) -> Path:
     return path
 
 
-def static_rustflags(target: str) -> str:
-    """RUSTFLAGS that make a fully static binary for the target.
+def libc_rustflags(target: str, static_glibc: bool) -> str:
+    """RUSTFLAGS selecting how the C library is linked.
 
     :param target: Rust target triple
+    :param static_glibc: link glibc statically (needs glibc's static libraries,
+        e.g. Debian's libc6-dev or Fedora's glibc-static)
     :return: flags string (possibly empty)
     """
-    # musl targets link statically by default. glibc targets need crt-static;
-    # that works here because the runtime never uses NSS or dlopen.
-    return "-C target-feature=+crt-static" if target.endswith("-gnu") else ""
+    # musl targets are static by default, so need no flags. glibc targets are
+    # dynamic by default; crt-static makes them static, which works here
+    # because the runtime never uses NSS or dlopen.
+    return "-C target-feature=+crt-static" if static_glibc and target.endswith("-gnu") else ""
 
 
-def build_multicall_and_stub(target: str, out: Path) -> tuple[Path, Path]:
-    """Build the multicall binary and the static stub, and set up multicall/.
+def build_multicall_and_stub(target: str, rustflags: str, out: Path) -> tuple[Path, Path]:
+    """Build the multicall binary and the Rust stub, and set up multicall/.
 
     :param target: Rust target triple
+    :param rustflags: RUSTFLAGS from :func:`libc_rustflags`
     :param out: output root
-    :return: paths of the built aliasmux and static stub
+    :return: paths of the built aliasmux and Rust stub
     """
     # One cargo invocation for both, sharing the compiled runtime.
     run(["cargo", "build", "--release", "--target", target, "-p", "aliasmux", "-p", "aliasmux-stub"],
-        env={"RUSTFLAGS": static_rustflags(target)})
+        env={"RUSTFLAGS": rustflags})
     built = ROOT / "target" / target / "release"
     # The multicall variant: the binary plus a symlink per alias.
     multicall = fresh_dir(out / "multicall")
@@ -154,20 +158,21 @@ def patch_variant(aliasmux: Path, stub: Path, directory: Path) -> None:
     run([str(aliasmux), "patch", "--stub", str(stub), "--out", str(fresh_dir(directory))], capture=True)
 
 
-def build_singles(target: str, names: list[str], out: Path) -> None:
-    """Compile one static executable per alias.
+def build_singles(target: str, rustflags: str, names: list[str], out: Path) -> None:
+    """Compile one executable per alias.
 
     :param target: Rust target triple
+    :param rustflags: RUSTFLAGS from :func:`libc_rustflags`
     :param names: aliases to build
     :param out: output root
     """
     single = fresh_dir(out / "single")
     built = ROOT / "target" / target / "release" / "aliasmux-single"
-    # Same RUSTFLAGS and target dir as the static build, so the runtime is
+    # Same RUSTFLAGS and target dir as the multicall build, so the runtime is
     # compiled once and each alias only recompiles its tiny main and relinks.
     for name in names:
         run(["cargo", "build", "--release", "--target", target, "-p", "aliasmux-single"],
-            env={"RUSTFLAGS": static_rustflags(target), "ALIASMUX_NAME": name})
+            env={"RUSTFLAGS": rustflags, "ALIASMUX_NAME": name})
         shutil.copy2(built, single / name)
 
 
@@ -209,8 +214,11 @@ def main() -> None:
     # Arbitrary default output location; anything works.
     parser.add_argument("--out", type=Path, default=ROOT / "out", help="output directory (default: out/)")
     parser.add_argument("--target", default="x86_64-unknown-linux-musl",
-                        help="target for the static variants (default: x86_64-unknown-linux-musl; "
-                             "a -gnu target is linked with crt-static instead)")
+                        help="target for the multicall, stub and single variants (default: "
+                             "x86_64-unknown-linux-musl, which is always static; a -gnu target "
+                             "links glibc dynamically unless --static-glibc is given)")
+    parser.add_argument("--static-glibc", action="store_true",
+                        help="with a -gnu target, link glibc statically (needs glibc's static libraries)")
     parser.add_argument("--aliases", type=Path, help="alias file to use instead of aliases.txt")
     args = parser.parse_args()
 
@@ -221,16 +229,17 @@ def main() -> None:
     out = args.out.resolve()
 
     # Order matters: the multicall binary does the patching and lists names.
-    aliasmux, static_stub = build_multicall_and_stub(args.target, out)
+    rustflags = libc_rustflags(args.target, args.static_glibc)
+    aliasmux, rust_stub = build_multicall_and_stub(args.target, rustflags, out)
     names = alias_names(aliasmux)
-    patch_variant(aliasmux, static_stub, out / "stub")
+    patch_variant(aliasmux, rust_stub, out / "stub")
 
     c_stub = build_cdylib_stub(out)
     patch_variant(aliasmux, c_stub, out / "cdylib")
     # The library goes in cdylib/lib, matching the stub's $ORIGIN/lib rpath.
     (out / "cdylib-lib-staging").rename(out / "cdylib" / "lib")
 
-    build_singles(args.target, names, out)
+    build_singles(args.target, rustflags, names, out)
     report(out, names)
 
 
