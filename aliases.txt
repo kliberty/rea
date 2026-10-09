@@ -1,4 +1,6 @@
-# aliasmux alias definitions: one per line, `name = template`.
+# Example alias file. Create the aliases with: aliasmux patch aliases.txt
+#
+# One per line, `name = template`.
 #
 # {1}, {2}, ...  the alias's arguments (1-based)
 # {2..}          the second argument onward, one word each

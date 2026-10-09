@@ -69,6 +69,17 @@ pub fn name_problem(name: &str) -> Option<String> {
 /// :param src: file contents
 /// :return: the entries, or every problem found (not just the first)
 pub fn parse(src: &str) -> Result<Vec<Entry<'_>>, Vec<FileError>> {
+    let (entries, errors) = parse_lenient(src);
+    if errors.is_empty() { Ok(entries) } else { Err(errors) }
+}
+
+/// Parse the file, keeping the valid entries even when other lines have
+/// problems, so a caller can go on to check those entries' templates and
+/// report everything wrong with the file in one go.
+///
+/// :param src: file contents
+/// :return: the valid entries, and a problem per invalid line
+pub fn parse_lenient(src: &str) -> (Vec<Entry<'_>>, Vec<FileError>) {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
     // Name -> first line it was defined on, to report duplicates usefully.
@@ -102,8 +113,7 @@ pub fn parse(src: &str) -> Result<Vec<Entry<'_>>, Vec<FileError>> {
         }
         entries.push(Entry { name, template, line });
     }
-    // Report all problems together, so one run shows every typo at once.
-    if errors.is_empty() { Ok(entries) } else { Err(errors) }
+    (entries, errors)
 }
 
 #[cfg(test)]

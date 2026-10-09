@@ -1,17 +1,35 @@
-//! The aliasmux command line.
+//! The aliasmux command line: create, update, list and inspect aliases.
+//!
+//! An alias is a copy of the `aliasmux-stub` executable with its definition
+//! written into the stub's slot (see aliasmux_core::slot). Creating one needs
+//! no compiler: the definition is validated here, at creation time, with the
+//! same parser the alias runs, so a bad template never becomes an executable.
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-use aliasmux_core::{run_alias, slot, template};
+use aliasmux_core::{aliasfile, run_alias, slot, template};
 
 /// Prefix for messages, and the program name in `--help`.
 const SELF_NAME: &str = env!("CARGO_PKG_NAME");
 
+/// File name of the stub, expected next to this executable by default.
+const STUB_NAME: &str = "aliasmux-stub";
+
+/// Largest file that directory scans (`list`, `patch --prune`) will read when
+/// looking for aliases. Arbitrary, but far above any stub's size, so the limit
+/// only spares reading big unrelated files that happen to share the directory.
+const SCAN_LIMIT: u64 = 64 * 1024 * 1024;
+
 /// Command aliases with numbered arguments and real pipelines, no shell.
+///
+/// Each alias is a small standalone executable. DIR defaults to the directory
+/// this program is in, and the stub to `aliasmux-stub` next to it.
 #[derive(Parser)]
 #[command(name = SELF_NAME, version)]
 struct Cli {
@@ -19,9 +37,77 @@ struct Cli {
     command: Cmd,
 }
 
+/// Where aliases go and what they are made from; shared by `new` and `patch`.
+#[derive(clap::Args)]
+struct Output {
+    /// Directory for the aliases (default: the directory this program is in).
+    #[arg(short = 'o', long = "out", value_name = "DIR")]
+    dir: Option<PathBuf>,
+    /// The stub executable to copy (default: aliasmux-stub next to this program).
+    #[arg(long, value_name = "PATH")]
+    stub: Option<PathBuf>,
+    /// Replace existing files that are not aliasmux aliases.
+    #[arg(long)]
+    force: bool,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run an ad-hoc template, to try one out before adding it to the file.
+    /// Create (or update) one alias.
+    New {
+        /// Alias name, which is also its file name.
+        name: String,
+        /// Template, e.g. 'ffmpeg -i {1} -c copy {1}.mkv' (quote it for your shell).
+        template: String,
+        #[command(flatten)]
+        output: Output,
+    },
+    /// Create or update every alias defined in an alias file.
+    ///
+    /// The file is validated completely before anything is written. Aliases
+    /// whose definition is unchanged are left untouched.
+    Patch {
+        /// Alias file: one `name = template` per line, `#` for comments.
+        file: PathBuf,
+        /// Only these aliases from the file (default: all of them).
+        names: Vec<String>,
+        #[command(flatten)]
+        output: Output,
+        /// Also remove aliases in DIR that the file no longer defines.
+        #[arg(long, conflicts_with = "names")]
+        prune: bool,
+    },
+    /// Validate an alias file without writing anything.
+    Check {
+        /// Alias file to check.
+        file: PathBuf,
+    },
+    /// List the aliases in a directory, in alias-file format.
+    ///
+    /// The output is a valid alias file, so `list DIR > aliases.txt` followed
+    /// by `patch aliases.txt` recreates the same aliases.
+    List {
+        /// Directory to scan (default: the directory this program is in).
+        dir: Option<PathBuf>,
+    },
+    /// Print the definition stored in alias executables.
+    Inspect {
+        /// Alias executables.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// Print the commands an alias would run, without running them.
+    Explain {
+        /// Treat TARGET as template source rather than an alias executable.
+        #[arg(short = 't', long = "template")]
+        is_template: bool,
+        /// Alias executable (or template source, with -t).
+        target: String,
+        /// Arguments to expand with.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
+    /// Run a template directly, to try it out before creating an alias.
     Eval {
         /// Template source (quote it for your shell).
         template: String,
@@ -29,31 +115,21 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
-    /// Print the commands a template would run, without running them.
-    Explain {
-        /// Template source (quote it for your shell).
-        template: String,
-        /// Arguments to expand with.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<OsString>,
-    },
-    /// Print the alias definition stored in a patched executable.
-    Inspect {
-        /// A file produced by `patch`.
-        file: PathBuf,
-    },
 }
 
-/// Entry point for management mode.
+/// Entry point.
 ///
 /// :return: never; exits with the command's status
 pub fn main() -> ! {
-    // `eval` replaces the process or exits itself; the rest
-    // return a status here.
+    // `eval` replaces the process or exits itself; the rest return a status.
     let status = match Cli::parse().command {
+        Cmd::New { name, template, output } => new(&name, &template, &output),
+        Cmd::Patch { file, names, output, prune } => patch(&file, &names, &output, prune),
+        Cmd::Check { file } => check(&file),
+        Cmd::List { dir } => list(dir.as_deref()),
+        Cmd::Inspect { files } => inspect(&files),
+        Cmd::Explain { is_template, target, args } => explain(is_template, &target, &args),
         Cmd::Eval { template, args } => run_alias(SELF_NAME, &template, &args),
-        Cmd::Explain { template, args } => explain(&template, &args),
-        Cmd::Inspect { file } => inspect(&file),
     };
     std::process::exit(status);
 }
@@ -65,6 +141,438 @@ pub fn main() -> ! {
 fn fail(message: &str) -> i32 {
     eprintln!("{SELF_NAME}: {message}");
     1
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// Check one alias definition completely, as creation requires.
+///
+/// :param name: alias name
+/// :param template: template source
+/// :return: an explanation of the first problem, or `None` if it is valid
+fn definition_problem(name: &str, template: &str) -> Option<String> {
+    // Same name rules as the alias file, so both routes accept the same names.
+    if let Some(problem) = aliasfile::name_problem(name) {
+        return Some(problem);
+    }
+    // These two would shadow the tool and its stub in the same directory.
+    if name == SELF_NAME || name == STUB_NAME {
+        return Some(format!("`{name}` is reserved for aliasmux itself"));
+    }
+    // The real parser, with a caret under the error.
+    if let Err(err) = template::parse(template) {
+        return Some(format!("alias `{name}`: {}", err.render(template)));
+    }
+    // Last: the definition must fit in the stub's slot.
+    slot::encode(name, template).err()
+}
+
+/// Read and fully validate an alias file.
+///
+/// :param path: the alias file
+/// :param source: [out] holds the file's contents, which the entries borrow
+/// :return: the entries, or every problem found, formatted as `path:line: ...`
+fn load_alias_file<'a>(path: &Path, source: &'a mut String) -> Result<Vec<aliasfile::Entry<'a>>, Vec<String>> {
+    *source = fs::read_to_string(path).map_err(|err| vec![format!("cannot read {}: {err}", path.display())])?;
+    // Collect every problem in the file, so one run shows every typo: line
+    // problems (format, names, duplicates), plus the templates of every line
+    // that was otherwise fine.
+    let (entries, errors) = aliasfile::parse_lenient(source);
+    let mut problems: Vec<(usize, String)> = errors.into_iter().map(|e| (e.line, e.message)).collect();
+    problems.extend(entries.iter().filter_map(|e| definition_problem(e.name, e.template).map(|p| (e.line, p))));
+    // Report in file order, whichever check found each problem.
+    problems.sort_by_key(|(line, _)| *line);
+    if problems.is_empty() {
+        Ok(entries)
+    } else {
+        Err(problems.into_iter().map(|(line, p)| format!("{}:{line}: {p}", path.display())).collect())
+    }
+}
+
+/// Report every problem from [`load_alias_file`].
+///
+/// :param problems: the messages
+/// :return: exit status 1
+fn fail_all(problems: &[String]) -> i32 {
+    for problem in problems {
+        fail(problem);
+    }
+    1
+}
+
+// ---------------------------------------------------------------------------
+// Files: the stub, existing aliases, writing
+// ---------------------------------------------------------------------------
+
+/// The directory this program lives in, which is the default for DIR and for
+/// finding the stub.
+///
+/// Assumption: on Linux, `current_exe` resolves symlinks (it reads
+/// /proc/self/exe), so a symlinked `aliasmux` still finds the stub beside the
+/// real file. Defaulting DIR here is an arbitrary convenience: installing the
+/// tool in ~/.local/bin makes new aliases land there too.
+///
+/// :return: the directory
+fn own_dir() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|err| format!("cannot locate this program: {err}"))?;
+    exe.parent().map(Path::to_path_buf).ok_or_else(|| "cannot locate this program's directory".into())
+}
+
+/// A stub, read into memory, with its slot located.
+struct Stub {
+    /// The whole file.
+    image: Vec<u8>,
+    /// Byte offset of its slot.
+    offset: usize,
+}
+
+impl Stub {
+    /// Load and check a stub.
+    ///
+    /// :param path: the stub, or `None` for the default next to this program
+    /// :return: the stub
+    fn load(path: Option<&Path>) -> Result<Stub, String> {
+        let path = match path {
+            Some(path) => path.to_path_buf(),
+            None => own_dir()?.join(STUB_NAME),
+        };
+        let image = fs::read(&path).map_err(|err| format!("cannot read stub {}: {err} (use --stub to point at it)", path.display()))?;
+        let offset = slot::locate(&image).map_err(|err| format!("{}: {err}", path.display()))?;
+        // A marker alone is not proof of a slot: this program carries the
+        // marker bytes too, as a constant. A real stub's slot is empty, or
+        // holds a valid alias (any alias also works as a stub).
+        if let Err(slot::SlotError::Corrupt(why)) = slot::decode_at(&image, offset) {
+            return Err(format!("{}: not an aliasmux stub (marker found, but {why})", path.display()));
+        }
+        Ok(Stub { image, offset })
+    }
+
+    /// The bytes of an alias made from this stub.
+    ///
+    /// :param name: alias name (already validated)
+    /// :param template: template source (already validated)
+    /// :return: the complete executable
+    fn patched(&self, name: &str, template: &str) -> Result<Vec<u8>, String> {
+        let mut copy = self.image.clone();
+        copy[self.offset..self.offset + slot::SIZE].copy_from_slice(&slot::encode(name, template)?);
+        Ok(copy)
+    }
+}
+
+/// Read the alias definition out of a file, if it is an alias.
+///
+/// :param image: the file's contents
+/// :return: `(name, template)` for an alias; `None` for anything else, including
+///     the bare stub (empty slot) and the tool itself (marker but no slot)
+fn alias_in(image: &[u8]) -> Option<(&str, &str)> {
+    let offset = slot::locate(image).ok()?;
+    slot::decode_at(image, offset).ok()
+}
+
+/// What is currently at an alias's path.
+enum Existing {
+    /// Nothing.
+    Missing,
+    /// An aliasmux alias; holds the file's bytes for an unchanged-check.
+    Alias(Vec<u8>),
+    /// Something else (another program, the stub, a directory...).
+    Other,
+}
+
+/// Classify the file at a path.
+///
+/// :param path: the path
+/// :return: what is there
+fn existing(path: &Path) -> io::Result<Existing> {
+    match fs::read(path) {
+        Ok(bytes) if alias_in(&bytes).is_some() => Ok(Existing::Alias(bytes)),
+        Ok(_) => Ok(Existing::Other),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Existing::Missing),
+        // Reading a directory fails with EISDIR; it is "something else".
+        Err(err) if err.kind() == io::ErrorKind::IsADirectory => Ok(Existing::Other),
+        Err(err) => Err(err),
+    }
+}
+
+/// Write bytes as a new executable file (mode 0755).
+///
+/// :param path: destination; replaced if it exists
+/// :param bytes: contents
+/// :return: I/O result
+fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Set the mode at creation so the file is never briefly non-executable.
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(path)?;
+    file.write_all(bytes)
+}
+
+/// What writing an alias did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wrote {
+    Created,
+    Updated,
+    /// Same bytes already there; the file (and its mtime) were left alone.
+    Unchanged,
+    /// A non-alias file was replaced, which only `--force` allows.
+    Replaced,
+}
+
+/// Write one alias into a directory, refusing to clobber unrelated files.
+///
+/// :param stub: the stub to copy
+/// :param dir: target directory (must exist)
+/// :param name: alias name (already validated)
+/// :param template: template source (already validated)
+/// :param force: allow replacing a file that isn't an alias
+/// :return: what happened
+fn write_alias(stub: &Stub, dir: &Path, name: &str, template: &str, force: bool) -> Result<Wrote, String> {
+    let target = dir.join(name);
+    let bytes = stub.patched(name, template)?;
+    // Decide based on what's there now. Only aliases are updated freely; the
+    // tool, the stub, or any other program needs --force.
+    let wrote = match existing(&target).map_err(|err| format!("cannot read {}: {err}", target.display()))? {
+        Existing::Missing => Wrote::Created,
+        Existing::Alias(old) if old == bytes => return Ok(Wrote::Unchanged),
+        Existing::Alias(_) => Wrote::Updated,
+        Existing::Other if force => Wrote::Replaced,
+        Existing::Other => return Err(format!("{} exists and is not an aliasmux alias; use --force to replace it", target.display())),
+    };
+    // Write to a temporary name, then rename: replacing a running executable
+    // in place fails with ETXTBSY, and a half-written file must never be left
+    // under the alias's name. The leading dot keeps it out of normal listings.
+    let temp = dir.join(format!(".{name}.aliasmux-tmp"));
+    if let Err(err) = write_executable(&temp, &bytes).and_then(|()| fs::rename(&temp, &target)) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("cannot write {}: {err}", target.display()));
+    }
+    Ok(wrote)
+}
+
+/// Every alias in a directory.
+///
+/// :param dir: directory to scan
+/// :return: `(path, name, template)` per alias, sorted by name, then path
+fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
+    let listing = fs::read_dir(dir).map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
+    let mut found = Vec::new();
+    for entry in listing.flatten() {
+        let path = entry.path();
+        // Regular files of plausible size only; see SCAN_LIMIT.
+        let plausible = entry.metadata().is_ok_and(|m| m.is_file() && m.len() >= slot::SIZE as u64 && m.len() <= SCAN_LIMIT);
+        if !plausible {
+            continue;
+        }
+        // Unreadable files are simply not ours to report on.
+        let Ok(image) = fs::read(&path) else { continue };
+        if let Some((name, template)) = alias_in(&image) {
+            found.push((path, name.to_owned(), template.to_owned()));
+        }
+    }
+    found.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+    Ok(found)
+}
+
+/// Resolve DIR and create it if needed.
+///
+/// :param dir: the --out option
+/// :return: the directory
+fn output_dir(dir: Option<&Path>) -> Result<PathBuf, String> {
+    let dir = match dir {
+        Some(dir) => dir.to_path_buf(),
+        None => own_dir()?,
+    };
+    fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Print what happened to one alias.
+///
+/// :param wrote: the outcome
+/// :param path: the alias's path
+fn report(wrote: Wrote, path: &Path) {
+    // Unchanged aliases are only counted, so a large rerun stays quiet.
+    let verb = match wrote {
+        Wrote::Created => "created",
+        Wrote::Updated => "updated",
+        Wrote::Replaced => "replaced",
+        Wrote::Unchanged => return,
+    };
+    println!("{verb} {}", path.display());
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+/// `new`: create or update one alias.
+///
+/// :param name: alias name
+/// :param template: template source
+/// :param output: --out, --stub, --force
+/// :return: exit status
+fn new(name: &str, template: &str, output: &Output) -> i32 {
+    // Validate before touching the filesystem at all.
+    if let Some(problem) = definition_problem(name, template) {
+        return fail(&problem);
+    }
+    let prepared = Stub::load(output.stub.as_deref()).and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
+    let (stub, dir) = match prepared {
+        Ok(prepared) => prepared,
+        Err(err) => return fail(&err),
+    };
+    match write_alias(&stub, &dir, name, template, output.force) {
+        // Say "unchanged" here, unlike in `patch`: with one alias, silence
+        // would look like nothing happened for no reason.
+        Ok(Wrote::Unchanged) => {
+            println!("unchanged {}", dir.join(name).display());
+            0
+        }
+        Ok(wrote) => {
+            report(wrote, &dir.join(name));
+            0
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// `patch`: create or update the aliases of an alias file.
+///
+/// :param file: the alias file
+/// :param names: subset to write, or empty for all
+/// :param output: --out, --stub, --force
+/// :param prune: remove aliases the file no longer defines
+/// :return: exit status
+fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
+    // Validate the whole file first, so a typo anywhere writes nothing.
+    let mut source = String::new();
+    let entries = match load_alias_file(file, &mut source) {
+        Ok(entries) => entries,
+        Err(problems) => return fail_all(&problems),
+    };
+    // A requested name must exist in the file; better an error than a silent skip.
+    let defined: HashSet<&str> = entries.iter().map(|e| e.name).collect();
+    if let Some(missing) = names.iter().find(|n| !defined.contains(n.as_str())) {
+        return fail(&format!("{} defines no alias `{missing}`", file.display()));
+    }
+    let prepared = Stub::load(output.stub.as_deref()).and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
+    let (stub, dir) = match prepared {
+        Ok(prepared) => prepared,
+        Err(err) => return fail(&err),
+    };
+
+    // Write the selected aliases, counting outcomes for the summary.
+    let (mut written, mut unchanged, mut failures) = (0, 0, 0);
+    for entry in entries.iter().filter(|e| names.is_empty() || names.iter().any(|n| n == e.name)) {
+        match write_alias(&stub, &dir, entry.name, entry.template, output.force) {
+            Ok(Wrote::Unchanged) => unchanged += 1,
+            Ok(wrote) => {
+                report(wrote, &dir.join(entry.name));
+                written += 1;
+            }
+            Err(err) => failures += fail(&err),
+        }
+    }
+
+    // Prune by the name stored inside each alias, not its file name, so a
+    // renamed copy of a still-defined alias is kept. Only files that hold an
+    // alias are candidates; nothing else in DIR is ever removed.
+    let mut removed = 0;
+    if prune {
+        match scan(&dir) {
+            Ok(found) => {
+                for (path, name, _) in found {
+                    if defined.contains(name.as_str()) {
+                        continue;
+                    }
+                    match fs::remove_file(&path) {
+                        Ok(()) => {
+                            println!("removed {}", path.display());
+                            removed += 1;
+                        }
+                        Err(err) => failures += fail(&format!("cannot remove {}: {err}", path.display())),
+                    }
+                }
+            }
+            Err(err) => failures += fail(&err),
+        }
+    }
+    // The summary goes to stderr, so stdout lists only what changed.
+    eprintln!("{written} written, {unchanged} unchanged, {removed} removed, {failures} failed");
+    if failures > 0 { 1 } else { 0 }
+}
+
+/// `check`: validate an alias file.
+///
+/// :param file: the alias file
+/// :return: exit status
+fn check(file: &Path) -> i32 {
+    let mut source = String::new();
+    match load_alias_file(file, &mut source) {
+        Ok(entries) => {
+            println!("{}: {} aliases, all valid", file.display(), entries.len());
+            0
+        }
+        Err(problems) => fail_all(&problems),
+    }
+}
+
+/// `list`: print a directory's aliases as an alias file.
+///
+/// :param dir: directory, or `None` for the default
+/// :return: exit status
+fn list(dir: Option<&Path>) -> i32 {
+    let dir = match dir.map_or_else(own_dir, |d| Ok(d.to_path_buf())) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+    let found = match scan(&dir) {
+        Ok(found) => found,
+        Err(err) => return fail(&err),
+    };
+    for (path, name, template) in &found {
+        // A file not named after its alias is worth knowing about, and a
+        // comment line keeps the output a valid alias file.
+        if path.file_name() != Some(OsStr::new(name)) {
+            println!("# {} holds alias `{name}`", path.display());
+        }
+        println!("{name} = {template}");
+    }
+    0
+}
+
+/// `inspect`: print the definitions stored in alias executables.
+///
+/// :param files: the executables
+/// :return: exit status; 1 if any file is not an alias
+fn inspect(files: &[PathBuf]) -> i32 {
+    let mut failures = 0;
+    for file in files {
+        match read_definition(file) {
+            Ok((name, template)) => println!("{name} = {template}"),
+            Err(err) => failures += fail(&err),
+        }
+    }
+    if failures > 0 { 1 } else { 0 }
+}
+
+/// Read the definition stored in an alias executable.
+///
+/// :param file: the executable
+/// :return: `(name, template)`, or why the file is not an alias
+fn read_definition(file: &Path) -> Result<(String, String), String> {
+    let image = fs::read(file).map_err(|err| format!("cannot read {}: {err}", file.display()))?;
+    // Same lookup the stub does at run time, but on the file instead of memory.
+    let offset = slot::locate(&image).map_err(|err| format!("{}: {err}", file.display()))?;
+    match slot::decode_at(&image, offset) {
+        Ok((name, template)) => Ok((name.to_owned(), template.to_owned())),
+        // A marker with garbage after it is a false positive (this program
+        // carries the marker bytes as a constant), not a damaged alias.
+        Err(slot::SlotError::Corrupt(why)) => Err(format!("{}: not an aliasmux alias (marker found, but {why})", file.display())),
+        Err(err) => Err(format!("{}: {err}", file.display())),
+    }
 }
 
 /// Quote a word so the printed command can be pasted into sh (or a template).
@@ -94,15 +602,25 @@ fn format_argv(argv: &template::Argv) -> String {
 
 /// `explain`: print the expanded plan, one process per line.
 ///
-/// :param source: template source
+/// :param is_template: whether `target` is template source rather than a file
+/// :param target: alias executable, or template source
 /// :param args: arguments to expand with
 /// :return: exit status
-fn explain(source: &str, args: &[OsString]) -> i32 {
+fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
+    // Resolve the template source from whichever form was given.
+    let source = if is_template {
+        target.to_owned()
+    } else {
+        match read_definition(Path::new(target)) {
+            Ok((_, template)) => template,
+            Err(err) => return fail(&err),
+        }
+    };
     // Report errors exactly as a real run would, but without exiting the
     // process from inside a helper.
-    let parsed = match template::parse(source) {
+    let parsed = match template::parse(&source) {
         Ok(parsed) => parsed,
-        Err(err) => return fail(&format!("invalid template: {}", err.render(source))),
+        Err(err) => return fail(&format!("invalid template: {}", err.render(&source))),
     };
     let plan = match parsed.expand(args) {
         Ok(plan) => plan,
@@ -130,30 +648,4 @@ fn explain(source: &str, args: &[OsString]) -> i32 {
         println!("(single command: runs via exec, no supervisor process)");
     }
     0
-}
-
-/// `inspect`: show the definition stored in a patched executable.
-///
-/// :param file: the executable
-/// :return: exit status
-fn inspect(file: &Path) -> i32 {
-    let image = match fs::read(file) {
-        Ok(image) => image,
-        Err(err) => return fail(&format!("cannot read {}: {err}", file.display())),
-    };
-    // Same lookup the stub does at run time, but on the file instead of memory.
-    let offset = match slot::locate(&image) {
-        Ok(offset) => offset,
-        Err(err) => return fail(&format!("{}: {err}", file.display())),
-    };
-    match slot::decode_at(&image, offset) {
-        Ok((name, template)) => {
-            println!("{name} = {template}");
-            0
-        }
-        // A marker with garbage after it is a false positive (the tool itself
-        // carries the marker bytes as a constant), not a damaged alias.
-        Err(slot::SlotError::Corrupt(why)) => fail(&format!("{}: not a patched aliasmux executable (marker found, but {why})", file.display())),
-        Err(err) => fail(&format!("{}: {err}", file.display())),
-    }
 }

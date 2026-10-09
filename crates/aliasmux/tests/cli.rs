@@ -181,7 +181,7 @@ fn libc_sigterm() -> i32 {
 #[test]
 fn explain_prints_quoted_plan() {
     let out = bin()
-        .args(["explain", "flif -d {1} - | flif -E 14 - {1}.rot && mv {1}.rot {1}", "a b"])
+        .args(["explain", "-t", "flif -d {1} - | flif -E 14 - {1}.rot && mv {1}.rot {1}", "a b"])
         .output()
         .unwrap();
     let text = stdout(&out);
@@ -210,4 +210,170 @@ fn default_sigint_still_reaches_children() {
     let out = eval(r#"sh -c 'kill -INT $$; echo survived' | cat"#, &[]);
     assert_eq!(stdout(&out), "");
     assert_eq!(out.status.signal(), Some(2));
+}
+
+// ---------------------------------------------------------------------------
+// Creating aliases. These run `new` and `patch` without --stub, so they also
+// check that the stub is found next to the tool (Cargo builds both bins of
+// this package into the same directory).
+// ---------------------------------------------------------------------------
+
+/// Run `aliasmux` with arguments.
+///
+/// :param args: the arguments
+/// :return: the captured output
+fn tool(args: &[&OsStr]) -> Output {
+    bin().args(args).output().expect("binary runs")
+}
+
+/// Shorthand for building an argument list of mixed strings and paths.
+macro_rules! args {
+    ($($a:expr),* $(,)?) => { [$(std::ffi::OsStr::new($a)),*] };
+}
+
+use std::ffi::OsStr;
+
+#[test]
+fn new_creates_a_standalone_alias_and_updates_only_on_change() {
+    let dir = scratch("new");
+    let d = dir.to_str().unwrap();
+    // Create: the alias runs on its own, from its own file.
+    let out = tool(&args!["new", "greet", "printf [%s] {1}", "-o", d]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).starts_with("created "));
+    let run = Command::new(dir.join("greet")).arg("a b").output().unwrap();
+    assert_eq!(stdout(&run), "[a b]");
+    // The definition reads back out of the binary.
+    assert_eq!(stdout(&tool(&args!["inspect", dir.join("greet").as_os_str()])), "greet = printf [%s] {1}\n");
+
+    // Same definition again: reported unchanged, file untouched.
+    let before = fs::metadata(dir.join("greet")).unwrap().modified().unwrap();
+    let out = tool(&args!["new", "greet", "printf [%s] {1}", "-o", d]);
+    assert!(stdout(&out).starts_with("unchanged "), "{}", stdout(&out));
+    assert_eq!(fs::metadata(dir.join("greet")).unwrap().modified().unwrap(), before);
+
+    // A new definition updates it in place.
+    let out = tool(&args!["new", "greet", "printf -%s- {1}", "-o", d]);
+    assert!(out.status.success() && stdout(&out).starts_with("updated "), "{}", stderr(&out));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_validates_before_writing() {
+    let dir = scratch("new-invalid");
+    // Bad template: caret-pointed error, and no file created.
+    let out = tool(&args!["new", "bad", "echo $1", "-o", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("use `{1}`"), "{}", stderr(&out));
+    // Bad and reserved names are refused the same way.
+    assert!(!tool(&args!["new", "a/b", "true", "-o", dir.to_str().unwrap()]).status.success());
+    assert!(!tool(&args!["new", "aliasmux-stub", "true", "-o", dir.to_str().unwrap()]).status.success());
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_refuses_to_overwrite_non_alias_files_without_force() {
+    let dir = scratch("clobber-guard");
+    let d = dir.to_str().unwrap();
+    // An ordinary file, the tool itself, and the bare stub are all off limits.
+    fs::write(dir.join("notes"), "precious").unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_aliasmux"), dir.join("tool-copy")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_aliasmux-stub"), dir.join("stub-copy")).unwrap();
+    for name in ["notes", "tool-copy", "stub-copy"] {
+        let out = tool(&args!["new", name, "true", "-o", d]);
+        assert_eq!(out.status.code(), Some(1), "{name}");
+        assert!(stderr(&out).contains("is not an aliasmux alias"), "{name}: {}", stderr(&out));
+    }
+    assert_eq!(fs::read_to_string(dir.join("notes")).unwrap(), "precious");
+    // --force is the explicit way through.
+    let out = tool(&args!["new", "notes", "true", "-o", d, "--force"]);
+    assert!(stdout(&out).starts_with("replaced "), "{}", stderr(&out));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn patch_validates_the_whole_file_before_writing() {
+    let dir = scratch("patch-invalid");
+    let file = dir.join("aliases.txt");
+    // One good line and two bad ones, failing different checks (template and
+    // name): both reported in one run, in file order, and nothing written.
+    fs::write(&file, "good = true\nbad = echo $1\nalso bad = x\n").unwrap();
+    let out_dir = dir.join("bin");
+    let out = tool(&args!["patch", file.as_os_str(), "-o", out_dir.as_os_str()]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("aliases.txt:2:") && err.contains("aliases.txt:3:"), "{err}");
+    assert!(!out_dir.join("good").exists());
+    // `check` reports the same problems.
+    assert_eq!(tool(&args!["check", file.as_os_str()]).status.code(), Some(1));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn patch_writes_only_changes_and_prunes_removed_aliases() {
+    let dir = scratch("patch-prune");
+    let (file, out_dir) = (dir.join("aliases.txt"), dir.join("bin"));
+    let patch = |extra: &[&str]| {
+        let mut args = vec![OsStr::new("patch"), file.as_os_str(), OsStr::new("-o"), out_dir.as_os_str()];
+        args.extend(extra.iter().map(OsStr::new));
+        tool(&args)
+    };
+    fs::write(&file, "keep = true\nchange = printf a\ngone = false\n").unwrap();
+    assert!(patch(&[]).status.success());
+    // An unrelated file in the directory must survive pruning.
+    fs::write(out_dir.join("unrelated"), "x").unwrap();
+    let keep_mtime = fs::metadata(out_dir.join("keep")).unwrap().modified().unwrap();
+
+    fs::write(&file, "keep = true\nchange = printf b\n").unwrap();
+    let out = patch(&["--prune"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Only the changed alias is rewritten; the deleted one is removed.
+    let lines: Vec<String> = stdout(&out).lines().map(|l| l.replace(out_dir.to_str().unwrap(), "DIR")).collect();
+    assert_eq!(lines, ["updated DIR/change", "removed DIR/gone"]);
+    assert!(stderr(&out).contains("1 written, 1 unchanged, 1 removed, 0 failed"), "{}", stderr(&out));
+    assert_eq!(fs::metadata(out_dir.join("keep")).unwrap().modified().unwrap(), keep_mtime);
+    assert!(out_dir.join("unrelated").exists());
+    assert_eq!(stdout(&Command::new(out_dir.join("change")).output().unwrap()), "b");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn list_output_is_an_alias_file_that_recreates_the_aliases() {
+    let dir = scratch("round-trip");
+    let (first, second) = (dir.join("first"), dir.join("second"));
+    let defs = "pipe = printf 'b\\na\\n' | sort\nsay = printf %s {1}\n";
+    fs::write(dir.join("aliases.txt"), defs).unwrap();
+    assert!(tool(&args![OsStr::new("patch"), dir.join("aliases.txt").as_os_str(), OsStr::new("-o"), first.as_os_str()]).status.success());
+    // `list` prints the definitions back, sorted by name...
+    let listed = stdout(&tool(&args![OsStr::new("list"), first.as_os_str()]));
+    assert_eq!(listed, "pipe = printf 'b\\na\\n' | sort\nsay = printf %s {1}\n");
+    // ...and patching from that output reproduces identical executables.
+    fs::write(dir.join("listed.txt"), &listed).unwrap();
+    assert!(tool(&args![OsStr::new("patch"), dir.join("listed.txt").as_os_str(), OsStr::new("-o"), second.as_os_str()]).status.success());
+    for name in ["pipe", "say"] {
+        assert_eq!(fs::read(first.join(name)).unwrap(), fs::read(second.join(name)).unwrap(), "{name}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_tool_itself_is_refused_as_a_stub() {
+    // aliasmux carries the marker bytes in its patching code. Treating that as
+    // a slot would overwrite 4 KiB of the program, so it must refuse.
+    let dir = scratch("stub-guard");
+    let out = tool(&args!["new", "x", "true", "-o", dir.to_str().unwrap(), "--stub", env!("CARGO_BIN_EXE_aliasmux")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("not an aliasmux stub"), "{}", stderr(&out));
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explain_reads_an_alias_executable() {
+    let dir = scratch("explain-file");
+    assert!(tool(&args!["new", "mv2", "mv {1} {1}.bak", "-o", dir.to_str().unwrap()]).status.success());
+    let out = tool(&args![OsStr::new("explain"), dir.join("mv2").as_os_str(), OsStr::new("a b")]);
+    assert_eq!(stdout(&out), "   mv 'a b' 'a b.bak'\n(single command: runs via exec, no supervisor process)\n");
+    let _ = fs::remove_dir_all(&dir);
 }

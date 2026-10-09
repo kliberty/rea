@@ -1,10 +1,44 @@
 # aliasmux
 
-Compiled command aliases with numbered arguments and real pipelines, and no
-shell involved. The successor to `alias_maker.py` (2012).
+Command aliases with numbered arguments and real pipelines, and no shell
+involved. The successor to `alias_maker.py` (2012).
 
-One binary holds every alias. Each alias is a symlink to it, and the name it
-was invoked under picks the template, busybox style.
+Each alias is a small standalone executable: a copy of `aliasmux-stub` with
+the alias written into it. Creating one needs no compiler, and the alias needs
+nothing else at run time. Copy it anywhere, under any name, and it still runs.
+
+```
+$ aliasmux new flif270 'flif -d {1} - | convert -rotate 270 - - | flif -E 14 - {1}.rot.flif && mv {1}.rot.flif {1}'
+created /home/you/.local/bin/flif270
+$ flif270 'holiday photo.flif'
+```
+
+## Install
+
+Build once, anywhere with Rust, then copy the two binaries to the machines
+that need them:
+
+```
+cargo build --release --target x86_64-unknown-linux-musl   # static: runs on any x86-64 Linux
+cp target/x86_64-unknown-linux-musl/release/{aliasmux,aliasmux-stub} ~/.local/bin/
+```
+
+`rustup target add x86_64-unknown-linux-musl` first. A plain
+`cargo build --release` works too, but links glibc dynamically, so the
+binaries need a compatible glibc wherever they go.
+
+`aliasmux` looks for `aliasmux-stub` next to itself, and by default writes
+aliases into its own directory too; `--stub` and `-o DIR` override both.
+
+## Creating aliases
+
+One at a time:
+
+```
+aliasmux new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
+```
+
+Or from an alias file, one `name = template` per line, `#` for comments:
 
 ```
 # aliases.txt
@@ -13,64 +47,34 @@ mkvize  = ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv
 ll      = ls -la
 ```
 
-## Packaging variants
-
-The runtime lives in `crates/core`; the other crates only differ in how a
-template reaches it:
-
-| Variant | Crate | Each alias is | Needs at run time |
-|---|---|---|---|
-| multicall | `crates/aliasmux` | a symlink; argv[0] picks the template | the one binary |
-| patched stub | `crates/stub` | a copy of a prebuilt stub with the template written into it | nothing |
-| shared library | `crates/shared` (cdylib + `c/stub.c`) | a ~20 KB patched C stub calling the runtime `.so` | `lib/libaliasmux_shared.so` beside it |
-| single | `crates/single` | its own compiled binary from a generated `src/bin/<alias>.rs` (like alias_maker.py) | nothing |
-
-Build all four side by side into `out/`:
-
 ```
-scripts/build_variants.py                       # static, via musl
-scripts/build_variants.py --target x86_64-unknown-linux-gnu   # dynamic glibc
-scripts/build_variants.py --target x86_64-unknown-linux-gnu --static-glibc
+aliasmux check aliases.txt            # validate only
+aliasmux patch aliases.txt            # create or update them all
+aliasmux patch aliases.txt --prune    # ...and remove aliases no longer in the file
+aliasmux patch aliases.txt mkvize     # just one
 ```
 
-`rustup target add x86_64-unknown-linux-musl` first for the default. Dynamic
-glibc needs nothing extra; `--static-glibc` needs glibc's static libraries
-(`libc6-dev` on Debian/Ubuntu, `glibc-static` on Fedora). The
-shared-library variant always uses the gnu target, and needs a C compiler for
-its stub.
+- **Validated at creation.** A template is parsed when the alias is created,
+  with the same parser the alias runs, so a typo is reported with a caret
+  under it and no executable is written. `patch` checks the whole file first
+  and reports every problem at once.
+- **Only changes are written.** An alias whose definition is unchanged is left
+  alone, timestamp included; `patch` lists only what it created, updated or
+  removed.
+- **Other files are safe.** An existing file is replaced only if it is an
+  aliasmux alias. Anything else (another program, the tool, the stub) needs
+  `--force`. `--prune` only ever removes aliases.
 
-The shared library is a `cdylib`: its whole interface is one C function,
-`aliasmux_run_slot` (declared in `crates/shared/c/aliasmux.h`), with Rust's std
-linked inside. So stubs can be written in any language, and the library can be
-rebuilt with any rustc without touching existing aliases.
-
-For day-to-day use, pick one:
-
-```
-# multicall
-cargo build --release
-target/release/aliasmux install ~/.local/bin
-
-# patched stubs: no compiler needed per alias, only for the stub itself
-target/release/aliasmux patch --stub target/release/aliasmux-stub --out ~/.local/bin
-aliasmux inspect ~/.local/bin/flif270      # read the definition back out
-```
-
-Templates are parsed at build time (and again by `patch`), so a typo fails
-with a caret under the problem. Set `ALIASMUX_ALIASES=path/to/file` to keep the
-definitions outside the repo (a dotfiles repo, say).
-
-After editing aliases, rebuild and run `install` again (`--prune` removes links
-for deleted aliases) or `patch` again.
-
-For the single variant, `aliasmux gen-single crates/single/src/bin` writes one
-`main` per alias (and deletes those of removed aliases), touching only files
-whose content changed. Cargo then builds them as separate bin targets: in
-parallel, and on later builds only the aliases that changed.
+The aliases themselves are the record. `aliasmux list DIR` prints the aliases
+in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
+by `patch aliases.txt` recreates them exactly.
 
 ```
-target/release/aliasmux gen-single crates/single/src/bin
-cargo build --release -p aliasmux-single --bins
+aliasmux list [DIR]                  # aliases in DIR, as an alias file
+aliasmux inspect FILE...             # definition stored in alias executables
+aliasmux explain FILE 'a b.flif'     # what an alias would run, quoted
+aliasmux explain -t TEMPLATE ARGS    # the same for a template
+aliasmux eval TEMPLATE ARGS          # run a template directly, to try it out
 ```
 
 ## Template syntax
@@ -83,7 +87,7 @@ cargo build --release -p aliasmux-single --bins
 | `a \| b` | pipe |
 | `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
 | `'...'` | fully literal |
-| `"..."` | literal except `{N}` and the escapes `\" \\ \{ \}` |
+| `"..."` | literal except `{N}` and the escapes `\" \\ \{ \} \$ \`` |
 | `\x` | literal `x` |
 
 - Arguments are substituted straight into argv, so a filename with spaces is
@@ -91,9 +95,10 @@ cargo build --release -p aliasmux-single --bins
 - A single command with no references gets its arguments appended, like a shell
   alias (`ll` above). Otherwise the argument count must match. `flif270 *.flif`
   is an error, not "process the first file".
-- `$`, backticks, globs, redirection, `( )` and a lone `&` are errors unless
-  quoted, rather than silently passed through. `find -exec ... '{}' \;` needs
-  the braces and `;` quoted, as in sh.
+- `$`, backticks, globs, redirection, `( )` and a lone `&` are errors rather
+  than silently passed through. Quote or escape them to pass them literally;
+  `$` and backticks need `\$` and `` \` `` even inside double quotes, as in sh.
+  `find -exec ... '{}' \;` needs the braces and `;` quoted, also as in sh.
 
 ## Runtime behavior
 
@@ -110,23 +115,22 @@ cargo build --release -p aliasmux-single --bins
     clean up on SIGINT get to finish. If a stage died by SIGINT, the rest of the
     list is skipped and the supervisor dies by SIGINT too, so calling scripts
     stop as they would under bash.
+  - If the alias starts with SIGINT ignored (a background job, or `nohup`), the
+    stages inherit that, as they would from a shell.
 
-## Management commands
+## Layout
 
-```
-aliasmux list                      # every alias
-aliasmux show flif270              # template and argument count
-aliasmux explain flif270 'a b.flif'   # print what would run, quoted
-aliasmux eval 'printf [%s] {2..}' a b c   # try a template before adding it
-aliasmux run flif270 pic.flif      # run without the symlink
-aliasmux install [--force] [--prune] DIR
-aliasmux patch --stub STUB --out DIR [NAMES...]
-aliasmux inspect FILE                # definition stored in a patched alias
-aliasmux gen-single DIR              # per-alias main sources for crates/single
-```
+- `crates/core`: the runtime, i.e. template language, alias file format,
+  process execution, and the slot format that holds an alias in its stub.
+- `crates/aliasmux`: the `aliasmux` tool (`src/main.rs`, `src/cli.rs`) and the
+  stub (`src/bin/aliasmux-stub.rs`), built side by side.
+
+Earlier designs (a multicall binary, a shared-library variant with a C stub,
+and separately compiled per-alias binaries) are in the git history.
 
 ## Migrating from alias_maker.py
 
 In the old `bash -c` aliases, `$0` was the first argument. So `$0` becomes
 `{1}`, `$1` becomes `{2}`, and `"$@"` becomes `{2..}`. Drop the
-`bash -c '...'` wrapper and the shell quoting around `$0`.
+`bash -c '...'` wrapper and the shell quoting around `$0`. A leftover `$0`
+is reported rather than passed through, so nothing slips by unconverted.
