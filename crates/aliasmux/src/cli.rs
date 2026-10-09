@@ -46,9 +46,14 @@ struct Output {
     /// The stub executable to copy (default: aliasmux-stub next to this program).
     #[arg(long, value_name = "PATH")]
     stub: Option<PathBuf>,
-    /// Replace existing files that are not aliasmux aliases.
+    /// Allow replacing an existing file that is not an aliasmux alias (another
+    /// program, say). Existing aliases are always updated without this, and
+    /// unchanged ones are never rewritten, with or without it.
+    // Constraint on change: deliberately not called --force, which reads as
+    // "rewrite everything" and was confusing. (A plain comment, not `///`, so
+    // it stays out of --help.)
     #[arg(long)]
-    force: bool,
+    replace_non_aliases: bool,
 }
 
 #[derive(Subcommand)]
@@ -316,7 +321,7 @@ enum Wrote {
     Updated,
     /// Same bytes already there; the file (and its mtime) were left alone.
     Unchanged,
-    /// A non-alias file was replaced, which only `--force` allows.
+    /// A non-alias file was replaced, which only `--replace-non-aliases` allows.
     Replaced,
 }
 
@@ -326,19 +331,19 @@ enum Wrote {
 /// :param dir: target directory (must exist)
 /// :param name: alias name (already validated)
 /// :param template: template source (already validated)
-/// :param force: allow replacing a file that isn't an alias
+/// :param replace_non_aliases: allow replacing a file that isn't an alias
 /// :return: what happened
-fn write_alias(stub: &Stub, dir: &Path, name: &str, template: &str, force: bool) -> Result<Wrote, String> {
+fn write_alias(stub: &Stub, dir: &Path, name: &str, template: &str, replace_non_aliases: bool) -> Result<Wrote, String> {
     let target = dir.join(name);
     let bytes = stub.patched(name, template)?;
     // Decide based on what's there now. Only aliases are updated freely; the
-    // tool, the stub, or any other program needs --force.
+    // tool, the stub, or any other program needs --replace-non-aliases.
     let wrote = match existing(&target).map_err(|err| format!("cannot read {}: {err}", target.display()))? {
         Existing::Missing => Wrote::Created,
         Existing::Alias(old) if old == bytes => return Ok(Wrote::Unchanged),
         Existing::Alias(_) => Wrote::Updated,
-        Existing::Other if force => Wrote::Replaced,
-        Existing::Other => return Err(format!("{} exists and is not an aliasmux alias; use --force to replace it", target.display())),
+        Existing::Other if replace_non_aliases => Wrote::Replaced,
+        Existing::Other => return Err(format!("{} exists and is not an aliasmux alias; use --replace-non-aliases to replace it", target.display())),
     };
     // Write to a temporary name, then rename: replacing a running executable
     // in place fails with ETXTBSY, and a half-written file must never be left
@@ -411,7 +416,7 @@ fn report(wrote: Wrote, path: &Path) {
 ///
 /// :param name: alias name
 /// :param template: template source
-/// :param output: --out, --stub, --force
+/// :param output: --out, --stub, --replace-non-aliases
 /// :return: exit status
 fn new(name: &str, template: &str, output: &Output) -> i32 {
     // Validate before touching the filesystem at all.
@@ -423,7 +428,7 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
         Ok(prepared) => prepared,
         Err(err) => return fail(&err),
     };
-    match write_alias(&stub, &dir, name, template, output.force) {
+    match write_alias(&stub, &dir, name, template, output.replace_non_aliases) {
         // Say "unchanged" here, unlike in `patch`: with one alias, silence
         // would look like nothing happened for no reason.
         Ok(Wrote::Unchanged) => {
@@ -442,7 +447,7 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
 ///
 /// :param file: the alias file
 /// :param names: subset to write, or empty for all
-/// :param output: --out, --stub, --force
+/// :param output: --out, --stub, --replace-non-aliases
 /// :param prune: remove aliases the file no longer defines
 /// :return: exit status
 fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
@@ -466,7 +471,7 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
     // Write the selected aliases, counting outcomes for the summary.
     let (mut written, mut unchanged, mut failures) = (0, 0, 0);
     for entry in entries.iter().filter(|e| names.is_empty() || names.iter().any(|n| n == e.name)) {
-        match write_alias(&stub, &dir, entry.name, entry.template, output.force) {
+        match write_alias(&stub, &dir, entry.name, entry.template, output.replace_non_aliases) {
             Ok(Wrote::Unchanged) => unchanged += 1,
             Ok(wrote) => {
                 report(wrote, &dir.join(entry.name));

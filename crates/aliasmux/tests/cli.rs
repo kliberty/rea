@@ -273,7 +273,7 @@ fn new_validates_before_writing() {
 }
 
 #[test]
-fn new_refuses_to_overwrite_non_alias_files_without_force() {
+fn new_replaces_non_alias_files_only_when_told_to() {
     let dir = scratch("clobber-guard");
     let d = dir.to_str().unwrap();
     // An ordinary file, the tool itself, and the bare stub are all off limits.
@@ -286,8 +286,8 @@ fn new_refuses_to_overwrite_non_alias_files_without_force() {
         assert!(stderr(&out).contains("is not an aliasmux alias"), "{name}: {}", stderr(&out));
     }
     assert_eq!(fs::read_to_string(dir.join("notes")).unwrap(), "precious");
-    // --force is the explicit way through.
-    let out = tool(&args!["new", "notes", "true", "-o", d, "--force"]);
+    // --replace-non-aliases is the explicit way through.
+    let out = tool(&args!["new", "notes", "true", "-o", d, "--replace-non-aliases"]);
     assert!(stdout(&out).starts_with("replaced "), "{}", stderr(&out));
     let _ = fs::remove_dir_all(&dir);
 }

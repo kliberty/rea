@@ -63,7 +63,7 @@ aliasmux patch aliases.txt mkvize     # just one
   removed.
 - **Other files are safe.** An existing file is replaced only if it is an
   aliasmux alias. Anything else (another program, the tool, the stub) needs
-  `--force`. `--prune` only ever removes aliases.
+  `--replace-non-aliases`. `--prune` only ever removes aliases.
 
 The aliases themselves are the record. `aliasmux list DIR` prints the aliases
 in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
