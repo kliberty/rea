@@ -2,8 +2,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared", "crates/single"]
-# Plain `cargo build` / `cargo test` skip `single`, which only makes sense
-# with ALIASMUX_NAME set. scripts/build_variants.py builds it once per alias.
+# Plain `cargo build` / `cargo test` skip `single`: its bins exist only after
+# `aliasmux gen-single` writes them, and building one binary per alias on every
+# build would be wasteful. scripts/build_variants.py builds it explicitly.
 default-members = ["crates/core", "crates/aliasmux", "crates/stub", "crates/shared"]
 
 [workspace.package]

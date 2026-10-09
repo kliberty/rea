@@ -23,7 +23,7 @@ template reaches it:
 | multicall | `crates/aliasmux` | a symlink; argv[0] picks the template | the one binary |
 | patched stub | `crates/stub` | a copy of a prebuilt stub with the template written into it | nothing |
 | shared library | `crates/shared` (cdylib + `c/stub.c`) | a ~20 KB patched C stub calling the runtime `.so` | `lib/libaliasmux_shared.so` beside it |
-| single | `crates/single` | its own compiled binary (like alias_maker.py) | nothing |
+| single | `crates/single` | its own compiled binary from a generated `src/bin/<alias>.rs` (like alias_maker.py) | nothing |
 
 Build all four side by side into `out/`:
 
@@ -62,6 +62,16 @@ definitions outside the repo (a dotfiles repo, say).
 
 After editing aliases, rebuild and run `install` again (`--prune` removes links
 for deleted aliases) or `patch` again.
+
+For the single variant, `aliasmux gen-single crates/single/src/bin` writes one
+`main` per alias (and deletes those of removed aliases), touching only files
+whose content changed. Cargo then builds them as separate bin targets: in
+parallel, and on later builds only the aliases that changed.
+
+```
+target/release/aliasmux gen-single crates/single/src/bin
+cargo build --release -p aliasmux-single --bins
+```
 
 ## Template syntax
 
@@ -112,6 +122,7 @@ aliasmux run flif270 pic.flif      # run without the symlink
 aliasmux install [--force] [--prune] DIR
 aliasmux patch --stub STUB --out DIR [NAMES...]
 aliasmux inspect FILE                # definition stored in a patched alias
+aliasmux gen-single DIR              # per-alias main sources for crates/single
 ```
 
 ## Migrating from alias_maker.py

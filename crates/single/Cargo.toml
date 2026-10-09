@@ -1,12 +1,12 @@
 [package]
 name = "aliasmux-single"
-description = "One alias compiled into its own static executable (template chosen by ALIASMUX_NAME)"
+description = "One separately compiled executable per alias, from generated src/bin/<alias>.rs files"
 version.workspace = true
 edition.workspace = true
 
-[dependencies]
-aliasmux-core.workspace = true
+# The bins are the files in src/bin, which `aliasmux gen-single src/bin`
+# writes (one per alias) and Cargo discovers automatically. Each is its own
+# target, so Cargo compiles them in parallel and rebuilds only changed ones.
 
-# build.rs looks the alias up and validates it with the real parser.
-[build-dependencies]
+[dependencies]
 aliasmux-core.workspace = true

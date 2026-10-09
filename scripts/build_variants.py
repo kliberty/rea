@@ -158,22 +158,34 @@ def patch_variant(aliasmux: Path, stub: Path, directory: Path) -> None:
     run([str(aliasmux), "patch", "--stub", str(stub), "--out", str(fresh_dir(directory))], capture=True)
 
 
-def build_singles(target: str, rustflags: str, names: list[str], out: Path) -> None:
-    """Compile one executable per alias.
+def build_singles(aliasmux: Path, target: str, rustflags: str, out: Path) -> None:
+    """Compile one executable per alias, from generated per-alias sources.
 
+    ``aliasmux gen-single`` writes ``crates/single/src/bin/<bin>.rs`` for each
+    alias, rewriting only files whose content changed. Each file is its own
+    Cargo bin target, so a single cargo invocation compiles them in parallel,
+    and on later runs rebuilds only the aliases that changed.
+
+    :param aliasmux: the management binary, which generates the sources
     :param target: Rust target triple
     :param rustflags: RUSTFLAGS from :func:`libc_rustflags`
-    :param names: aliases to build
     :param out: output root
     """
+    # Constraint on change: keep RUSTFLAGS identical to the multicall build's.
+    # Cargo treats different flags as a different build, which would recompile
+    # the runtime and every alias each time the two builds alternate.
+    sources = ROOT / "crates" / "single" / "src" / "bin"
+    # stdout lists "BIN<tab>ALIAS" per alias; the bin name differs from the
+    # alias name only where Cargo forbids a character (see bin_name in cli.rs).
+    listing = run([str(aliasmux), "gen-single", str(sources)], capture=True)
+    bins = [tuple(line.split("\t")) for line in listing.splitlines() if line]
+    run(["cargo", "build", "--release", "--target", target, "-p", "aliasmux-single", "--bins"],
+        env={"RUSTFLAGS": rustflags})
+    # Copy each binary out under its real alias name.
     single = fresh_dir(out / "single")
-    built = ROOT / "target" / target / "release" / "aliasmux-single"
-    # Same RUSTFLAGS and target dir as the multicall build, so the runtime is
-    # compiled once and each alias only recompiles its tiny main and relinks.
-    for name in names:
-        run(["cargo", "build", "--release", "--target", target, "-p", "aliasmux-single"],
-            env={"RUSTFLAGS": rustflags, "ALIASMUX_NAME": name})
-        shutil.copy2(built, single / name)
+    built = ROOT / "target" / target / "release"
+    for bin_name, alias in bins:
+        shutil.copy2(built / bin_name, single / alias)
 
 
 def describe(path: Path) -> str:
@@ -239,7 +251,7 @@ def main() -> None:
     # The library goes in cdylib/lib, matching the stub's $ORIGIN/lib rpath.
     (out / "cdylib-lib-staging").rename(out / "cdylib" / "lib")
 
-    build_singles(args.target, rustflags, names, out)
+    build_singles(aliasmux, args.target, rustflags, out)
     report(out, names)
 
 
