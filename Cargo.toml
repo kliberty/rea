@@ -1,0 +1,18 @@
+[package]
+name = "aliasmux"
+version = "0.1.0"
+edition = "2024"
+description = "Compiled command aliases: numbered arguments and real pipelines, no shell"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.190"
+
+# Small, fast-starting binary. None of these change behavior.
+[profile.release]
+# No unwinding machinery; a panic is a bug here, so aborting is fine.
+panic = "abort"
+lto = true
+# Arbitrary trade-off: slower builds for slightly better LTO.
+codegen-units = 1
+strip = true

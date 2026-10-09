@@ -1,0 +1,14 @@
+# aliasmux alias definitions: one per line, `name = template`.
+#
+# {1}, {2}, ...  the alias's arguments (1-based)
+# {2..}          the second argument onward, one word each
+# {@}            all arguments, one word each
+# | && || ;      pipes and sequencing, as in sh
+#
+# Quote with '...' or "..." as in sh; references still work inside "...".
+# A single command with no references gets its arguments appended (like a
+# shell alias). Otherwise the argument count must match exactly.
+
+flif270 = flif -d {1} - | convert -rotate 270 - - | flif -E 14 - {1}.rot.flif && mv {1}.rot.flif {1}
+mkvize = ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv
+ll = ls -la
