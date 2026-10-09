@@ -226,3 +226,24 @@ fn patch_refuses_a_binary_that_only_contains_the_marker() {
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn inherited_sigint_ignore_reaches_children() {
+    // Started with SIGINT ignored (as a background job in a script is), the
+    // stages must inherit that: the stage sends itself SIGINT and must survive.
+    // `trap "" INT` makes sh ignore SIGINT, and `exec` keeps that across exec.
+    let template = r#"sh -c 'kill -INT $$; echo survived' | cat"#;
+    let script = format!("trap '' INT; exec \"$0\" eval '{}'", template.replace('\'', r"'\''"));
+    let out = Command::new("sh").args(["-c", &script, env!("CARGO_BIN_EXE_aliasmux")]).output().unwrap();
+    assert_eq!(stdout(&out), "survived\n", "{}", stderr(&out));
+    assert!(out.status.success(), "{:?}", out.status);
+}
+
+#[test]
+fn default_sigint_still_reaches_children() {
+    // The normal case: SIGINT at its default, so the stage dies by it, and the
+    // supervisor reports that by dying of SIGINT too.
+    let out = eval(r#"sh -c 'kill -INT $$; echo survived' | cat"#, &[]);
+    assert_eq!(stdout(&out), "");
+    assert_eq!(out.status.signal(), Some(2));
+}

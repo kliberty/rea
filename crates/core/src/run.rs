@@ -242,13 +242,28 @@ extern "C" fn do_nothing(_signal: libc::c_int) {}
 /// immune to Ctrl-C. A caught signal is reset to the default on `exec`, so
 /// children are unaffected. SIGTERM is deliberately not caught: it targets the
 /// supervisor alone, and dying is the right response (bash -c does the same).
+///
+/// A signal that is already ignored when we start is left ignored. That is how
+/// a background job (`alias &` in a script, or under nohup) is protected from
+/// Ctrl-C, and the children must inherit the protection. Installing the
+/// handler anyway would undo it: the handler resets to the *default* on exec,
+/// not to the disposition we started with. (The approach of alias_runtime.hpp,
+/// which checks the old disposition the same way.)
 pub fn shield_from_terminal_signals() {
     for signal in [libc::SIGINT, libc::SIGQUIT] {
         // SAFETY: a zeroed `sigaction` is a valid "no flags, empty mask" value
-        // that we then fill in. The handler is trivially async-signal-safe.
-        // Assumption: we are single-threaded here, so no race with other code
-        // changing dispositions.
+        // that we then fill in, or that `sigaction` fills in when querying.
+        // The handler is trivially async-signal-safe. Assumption: we are
+        // single-threaded here, so the query and the install can't race with
+        // other code changing dispositions.
         unsafe {
+            // Query only (null new action) to see what we inherited.
+            let mut current: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(signal, std::ptr::null(), &mut current);
+            // Inherited SIG_IGN: keep it, for us and (via exec) the children.
+            if current.sa_sigaction == libc::SIG_IGN {
+                continue;
+            }
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = do_nothing as extern "C" fn(libc::c_int) as libc::sighandler_t;
             // SA_RESTART lets blocking calls resume instead of failing with EINTR.
