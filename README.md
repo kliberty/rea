@@ -15,20 +15,36 @@ $ flif270 'holiday photo.flif'
 
 ## Install
 
-Build once, anywhere with Rust, then copy the two binaries to the machines
-that need them:
-
 ```
-cargo build --release --target x86_64-unknown-linux-musl   # static: runs on any x86-64 Linux
-cp target/x86_64-unknown-linux-musl/release/{aliasmux,aliasmux-stub} ~/.local/bin/
+make install          # aliasmux + aliasmux-stub into ~/.local/bin
+make aliases          # create/update the aliases in aliases.txt, there too
 ```
 
-`rustup target add x86_64-unknown-linux-musl` first. A plain
-`cargo build --release` works too, but links glibc dynamically, so the
-binaries need a compatible glibc wherever they go.
+`make help` lists everything. The variables `PREFIX` (default `~/.local`) and
+`ALIASES` (default the example `aliases.txt` here) change where things go and
+which alias file is used, e.g. `make aliases ALIASES=~/dotfiles/aliases.txt`.
+
+`make install-static` builds against musl instead, giving fully static
+binaries that run on any Linux machine of the same architecture, with no
+glibc version to match. It needs the target once:
+`rustup target add x86_64-unknown-linux-musl` (`make install-static` prints
+the exact command if it's missing). The plain `make install` links glibc
+dynamically, so its binaries need a compatible glibc wherever they go.
+
+For a machine with no Rust at all, install there by copying the two binaries
+from a static build: they are all aliasmux needs.
 
 `aliasmux` looks for `aliasmux-stub` next to itself, and by default writes
 aliases into its own directory too; `--stub` and `-o DIR` override both.
+
+**Upgrading:** `make install aliases`. The new stub differs from the old one,
+so every alias is rewritten onto it. `make uninstall` removes the two binaries
+and leaves the aliases, which keep working on their own.
+
+Without make, `make install` is
+`cargo install --locked --path crates/aliasmux --root ~/.local`
+(`--locked` makes cargo use `Cargo.lock`, which `cargo install` otherwise
+ignores).
 
 ## Creating aliases
 
