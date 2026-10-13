@@ -377,3 +377,51 @@ fn explain_reads_an_alias_executable() {
     assert_eq!(stdout(&out), "   mv 'a b' 'a b.bak'\n(single command: runs via exec, no supervisor process)\n");
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// `eval -`: the template read from stdin.
+// ---------------------------------------------------------------------------
+
+/// Run `aliasmux eval - ARGS...` with `input` on stdin.
+///
+/// :param input: bytes to feed on stdin
+/// :param args: arguments for the template
+/// :return: the captured output
+fn eval_stdin(input: &[u8], args: &[&str]) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = bin().arg("eval").arg("-").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Dropping stdin after writing closes it, so the read sees end of file.
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn eval_reads_the_template_from_stdin() {
+    // Arguments still come from the command line, options included.
+    let out = eval_stdin(b"printf [%s] {1} {2..}\n", &["a b", "-x"]);
+    assert_eq!(stdout(&out), "[a b][-x]", "{}", stderr(&out));
+    // Trailing line endings (CRLF, blank lines) are dropped.
+    assert_eq!(stdout(&eval_stdin(b"printf ok\r\n\n\n", &[])), "ok");
+}
+
+#[test]
+fn eval_stdin_rejects_multiple_lines_and_bad_input() {
+    // Two lines would otherwise be parsed as one command; refuse instead.
+    let out = eval_stdin(b"printf a\nprintf b\n", &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("must be a single line"), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    // Non-UTF-8 input and template errors are usage errors too.
+    assert_eq!(eval_stdin(b"echo \xff\n", &[]).status.code(), Some(2));
+    assert!(stderr(&eval_stdin(b"echo $1\n", &[])).contains("use `{1}`"));
+}
+
+#[test]
+fn eval_stdin_leaves_commands_with_an_exhausted_stdin() {
+    // Documented consequence: the template consumed stdin, so `cat` reads
+    // nothing (rather than, say, blocking or seeing the template text).
+    let out = eval_stdin(b"cat\n", &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+}

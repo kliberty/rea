@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -113,8 +113,11 @@ enum Cmd {
         args: Vec<OsString>,
     },
     /// Run a template directly, to try it out before creating an alias.
+    ///
+    /// With `-` as the template, it is read from stdin instead (one line), which
+    /// then leaves the template's commands with stdin already at end of file.
     Eval {
-        /// Template source (quote it for your shell).
+        /// Template source (quote it for your shell), or `-` to read it from stdin.
         template: String,
         /// Arguments for the template, passed through untouched.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -134,7 +137,7 @@ pub fn main() -> ! {
         Cmd::List { dir } => list(dir.as_deref()),
         Cmd::Inspect { files } => inspect(&files),
         Cmd::Explain { is_template, target, args } => explain(is_template, &target, &args),
-        Cmd::Eval { template, args } => run_alias(SELF_NAME, &template, &args),
+        Cmd::Eval { template, args } => eval(template, &args),
     };
     std::process::exit(status);
 }
@@ -205,6 +208,52 @@ fn fail_all(problems: &[String]) -> i32 {
         fail(problem);
     }
     1
+}
+
+/// `eval`: run a template, from the argument or (with `-`) from stdin.
+///
+/// :param template: template source, or `-` for stdin
+/// :param args: arguments for the template
+/// :return: never; runs the template or exits with an error
+fn eval(template: String, args: &[OsString]) -> ! {
+    // `-` follows the usual "read stdin" convention. A template that really is
+    // a lone `-` would only try to run a program named `-`, so nothing useful
+    // is lost; `\-` still spells that if anyone needs it.
+    let source = if template == "-" {
+        template_from_stdin().unwrap_or_else(|err| {
+            fail(&err);
+            std::process::exit(aliasmux_core::USAGE_ERROR);
+        })
+    } else {
+        template
+    };
+    run_alias(SELF_NAME, &source, args)
+}
+
+/// Read a one-line template from stdin.
+///
+/// The whole input is read (it must end before the template can run), so the
+/// template's commands inherit a stdin that is already at end of file.
+///
+/// :return: the template, without its trailing line ending
+fn template_from_stdin() -> Result<String, String> {
+    let mut text = String::new();
+    io::stdin().read_to_string(&mut text).map_err(|err| match err.kind() {
+        // Templates are text; the alias slot and file format both require UTF-8.
+        io::ErrorKind::InvalidData => "the template on stdin is not valid UTF-8".to_owned(),
+        _ => format!("cannot read the template from stdin: {err}"),
+    })?;
+    // `echo` and heredocs end the line (or add blank lines), so trailing line
+    // endings are dropped; any other whitespace is harmless to the parser.
+    let line = text.trim_end_matches(['\n', '\r']);
+    // Constraint on change: refuse embedded newlines instead of accepting
+    // them. The template parser treats a newline as plain whitespace, so two
+    // lines would silently become one command, where sh would run two. One
+    // line per template also matches the alias file and the stub's slot.
+    if line.contains('\n') {
+        return Err("the template on stdin must be a single line (use `;`, `&&` or `||` to run several commands)".into());
+    }
+    Ok(line.to_owned())
 }
 
 // ---------------------------------------------------------------------------

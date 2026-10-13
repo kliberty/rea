@@ -91,7 +91,12 @@ aliasmux inspect FILE...             # definition stored in alias executables
 aliasmux explain FILE 'a b.flif'     # what an alias would run, quoted
 aliasmux explain -t TEMPLATE ARGS    # the same for a template
 aliasmux eval TEMPLATE ARGS          # run a template directly, to try it out
+aliasmux eval - ARGS                 # the same, with the template read from stdin
 ```
+
+`eval -` reads one line from stdin as the template, which saves a layer of
+shell quoting (`aliasmux eval - < template.txt`, or a heredoc). Reading it uses
+up stdin, so the template's own commands then see stdin at end of file.
 
 ## Template syntax
 
