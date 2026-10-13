@@ -26,12 +26,54 @@ const STUB_NAME: &str = "aliasmux-stub";
 /// only spares reading big unrelated files that happen to share the directory.
 const SCAN_LIMIT: u64 = 64 * 1024 * 1024;
 
+/// The template language, shown by `aliasmux --help`, `new --help` and
+/// `eval --help`. Constraint on change: keep it in step with the parser
+/// (aliasmux_core::template) and the README's syntax table.
+const SYNTAX: &str = "\
+Template syntax:
+  Words and quoting work as in sh: '...' is literal, \"...\" is literal except
+  for {...} references and the escapes \\\" \\\\ \\{ \\} \\$ \\`, and \\x is a literal x.
+
+  {1} {2} ...     arguments counted from the front
+  {-1} {-2} ...   arguments counted from the back: {-1} is the last
+  {@}             every argument no {N} or {-N} uses, zero or more
+  {@+}            the same, but at least one is required
+  {A..B}          a slice: arguments A through B, both ends included, each
+                  counted like {N} or {-N}. Either end may be left out:
+                  {2..} is the 2nd onward, {..-2} all but the last. Slices
+                  are never empty, and may overlap the other references.
+  {0}             the alias name
+
+  a | b           pipe
+  a && b          run b only if a succeeded
+  a || b          run b only if a failed
+  a ; b           run b regardless
+  (&&, || and ; have equal precedence and group left to right, as in sh.)
+
+  A one-argument reference is always exactly one argument, spaces and all.
+  A word containing {@}, {@+} or a slice is repeated once per argument:
+  -I{@} gives -Ia -Ib, and nothing at all when {@} is empty.
+
+  Every argument must be used, and numbering has no gaps ({2} needs {1}).
+  The count is exact unless {@}, {@+} or a slice is used. A single command
+  with no references gets {@} appended, like a shell alias.
+
+  $, backticks, globs, redirection, ( ) and a lone & are errors rather than
+  passed through; quote or escape them to pass them literally.
+
+Examples:
+  aliasmux new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
+  aliasmux new cpto 'cp -t {-1} {@+}'
+  aliasmux new incl 'gcc -I{@} -c {-1}'
+  aliasmux new relink 'rm -f {@} && symlink {-1} {@}'";
+
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///
 /// Each alias is a small standalone executable. DIR defaults to the directory
 /// this program is in, and the stub to `aliasmux-stub` next to it.
 #[derive(Parser)]
-#[command(name = SELF_NAME, version)]
+// `-h` shows the short help with a pointer; `--help` shows the syntax too.
+#[command(name = SELF_NAME, version, after_help = "Run `aliasmux --help` for the template syntax.", after_long_help = SYNTAX)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -59,6 +101,7 @@ struct Output {
 #[derive(Subcommand)]
 enum Cmd {
     /// Create (or update) one alias.
+    #[command(after_long_help = SYNTAX)]
     New {
         /// Alias name, which is also its file name.
         name: String,
@@ -116,6 +159,7 @@ enum Cmd {
     ///
     /// With `-` as the template, it is read from stdin instead (one line), which
     /// then leaves the template's commands with stdin already at end of file.
+    #[command(after_long_help = SYNTAX)]
     Eval {
         /// Template source (quote it for your shell), or `-` to read it from stdin.
         template: String,
@@ -661,12 +705,13 @@ fn format_argv(argv: &template::Argv) -> String {
 /// :param args: arguments to expand with
 /// :return: exit status
 fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
-    // Resolve the template source from whichever form was given.
-    let source = if is_template {
-        target.to_owned()
+    // Resolve the name (for `{0}`) and template from whichever form was given.
+    // A bare template has no alias name, so it gets ours, as with `eval`.
+    let (name, source) = if is_template {
+        (SELF_NAME.to_owned(), target.to_owned())
     } else {
         match read_definition(Path::new(target)) {
-            Ok((_, template)) => template,
+            Ok(definition) => definition,
             Err(err) => return fail(&err),
         }
     };
@@ -676,7 +721,7 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
         Ok(parsed) => parsed,
         Err(err) => return fail(&format!("invalid template: {}", err.render(&source))),
     };
-    let plan = match parsed.expand(args) {
+    let plan = match parsed.expand(&name, args) {
         Ok(plan) => plan,
         Err(err) => return fail(&err.to_string()),
     };

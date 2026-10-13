@@ -30,7 +30,7 @@ pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
     });
     // Wrong argument counts get the template as a usage line, since the
     // template is the most precise description of what the alias wants.
-    let plan = parsed.expand(args).unwrap_or_else(|err| {
+    let plan = parsed.expand(name, args).unwrap_or_else(|err| {
         eprintln!("{name}: {err}\n    {name} = {source}");
         std::process::exit(USAGE_ERROR);
     });

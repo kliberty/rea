@@ -117,13 +117,15 @@ fn argument_count_is_checked() {
     assert_eq!(many.status.code(), Some(2));
     assert!(stderr(&many).contains("expected exactly 1 argument, got 2"), "{}", stderr(&many));
     // Too few.
-    assert_eq!(eval("printf %s {2}", &["a"]).status.code(), Some(2));
+    let few = eval("printf %s {1} {2}", &["a"]);
+    assert_eq!(few.status.code(), Some(2));
+    assert!(stderr(&few).contains("expected exactly 2 arguments, got 1"), "{}", stderr(&few));
 }
 
 #[test]
-fn splat_passes_rest_through_including_options() {
+fn rest_passes_arguments_through_including_options() {
     // Arguments that look like options belong to the alias, not to clap.
-    let out = eval("printf [%s] {2..}", &["a", "-b", "--c"]);
+    let out = eval("printf [%s] {@}", &["-b", "--c"]);
     assert_eq!(stdout(&out), "[-b][--c]");
 }
 
@@ -424,4 +426,57 @@ fn eval_stdin_leaves_commands_with_an_exhausted_stdin() {
     let out = eval_stdin(b"cat\n", &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "");
+}
+
+// ---------------------------------------------------------------------------
+// Several-argument references, end to end.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chunked_names_with_back_index_and_rest() {
+    // The poolcmd2 -c case: any number of names, then a shared argument last.
+    let explained = bin().args(["explain", "-t", "rm -f {@} && symlink {-1} {@}", "l1", "l2", "src"]).output().unwrap();
+    assert_eq!(stdout(&explained), "   rm -f l1 l2\n&& symlink src l1 l2\n");
+    // And for real, with commands that take several names: recreate two
+    // files (one stale), then use the last argument on its own.
+    let dir = scratch("chunk");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    fs::write(&a, "stale").unwrap();
+    let out = eval("rm -f {@} && touch {@} && printf %s {-1}", &[a.to_str().unwrap(), b.to_str().unwrap(), "done"]);
+    assert_eq!(stdout(&out), "done", "{}", stderr(&out));
+    assert_eq!(fs::read_to_string(&a).unwrap(), "");
+    assert!(b.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn word_repetition_and_alias_name() {
+    // -I{@} repeats per argument; {0} is the alias name (ours, for eval).
+    let out = eval("printf [%s] {0} -I{@}", &["a", "b"]);
+    assert_eq!(stdout(&out), "[aliasmux][-Ia][-Ib]");
+    // {@+} refuses to run with nothing to stand for.
+    let none = eval("printf %s {@+}", &[]);
+    assert_eq!(none.status.code(), Some(2));
+    assert!(stderr(&none).contains("expected at least 1 argument, got 0"), "{}", stderr(&none));
+}
+
+#[test]
+fn new_rejects_templates_no_count_satisfies() {
+    // Arguments 1 and 2 would never be used: refused at creation, no file.
+    let dir = scratch("unsatisfiable");
+    let out = tool(&args!["new", "bad", "echo {3..}", "-o", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("no number of arguments works"), "{}", stderr(&out));
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn template_syntax_is_in_the_long_help() {
+    // `--help` (long) carries the full syntax; `-h` points at it.
+    for args in [&["--help"][..], &["new", "--help"], &["eval", "--help"]] {
+        let help = stdout(&bin().args(args).output().unwrap());
+        assert!(help.contains("{A..B}") && help.contains("{@+}") && help.contains("both ends"), "{args:?}: {help}");
+    }
+    assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
 }

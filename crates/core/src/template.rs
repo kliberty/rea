@@ -7,10 +7,24 @@
 //! * `'single'` quotes (fully literal) and `"double"` quotes (literal except for
 //!   argument references and the escapes `\"`, `\\`, `\{`, `\}`, `\$`, `` \` ``)
 //! * `\x` outside quotes, which makes `x` literal
-//! * argument references: `{N}` (the Nth argument, 1-based), `{N..}` (the Nth
-//!   argument onward, one word each) and `{@}` (the same as `{1..}`)
+//! * argument references (see below)
 //! * operators: `|` (pipe), `&&`, `||` and `;`, with shell precedence (pipes
 //!   bind tighter; the other three are left-associative and equal)
+//!
+//! Argument references:
+//!
+//! * `{N}` and `{-N}`: one argument, counted from the front (from 1) or from
+//!   the back (`{-1}` is the last)
+//! * `{@}`: every argument that no `{N}` or `{-N}` uses, zero or more;
+//!   `{@+}` is the same but requires at least one
+//! * `{A..B}`: a slice, arguments A through B with both ends included, each
+//!   end counted like `{N}` / `{-N}` and either one optional. Slices claim
+//!   nothing (they may overlap other references) and are never empty.
+//! * `{0}`: the alias name
+//!
+//! A one-argument reference always yields exactly one argv entry. A word that
+//! contains a several-argument reference (`{@}`, `{@+}`, a slice) is repeated
+//! once per argument: `-I{@}` gives `-Ia -Ib`, and no entry at all when empty.
 //!
 //! Characters that a shell treats specially but this language does not (`$`,
 //! backticks, globs, redirections, parentheses, a lone `&`) are rejected unless
@@ -19,31 +33,134 @@
 //! template written as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
 //!
 //! `aliasmux new` and `patch` run this parser when an alias is created, so
-//! syntax errors surface then, not when the alias first runs.
+//! syntax errors (and templates that no argument count could satisfy) surface
+//! then, not when the alias first runs.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
-/// One fragment of a word: literal text, or a single argument substituted in.
+/// A one-argument position, as written in `{N}` or `{-N}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Index {
+    /// `{N}`: the Nth argument from the front, N >= 1.
+    Front(usize),
+    /// `{-N}`: the Nth argument from the back, N >= 1 (`Back(1)` is the last).
+    Back(usize),
+}
+
+impl Index {
+    /// Resolve to a 1-based argument position.
+    ///
+    /// :param count: how many arguments there are
+    /// :return: the position, or `None` if there are too few arguments
+    fn position(self, count: usize) -> Option<usize> {
+        match self {
+            Index::Front(k) => (k <= count).then_some(k),
+            Index::Back(k) => (k <= count).then(|| count + 1 - k),
+        }
+    }
+
+    /// The number as written, ignoring direction; sizes the arity search.
+    ///
+    /// :return: N for both `{N}` and `{-N}`
+    fn magnitude(self) -> usize {
+        match self {
+            Index::Front(k) | Index::Back(k) => k,
+        }
+    }
+
+    /// The position as it is written inside braces, e.g. `-2`.
+    ///
+    /// :return: the text
+    fn as_written(self) -> String {
+        match self {
+            Index::Front(k) => k.to_string(),
+            Index::Back(k) => format!("-{k}"),
+        }
+    }
+}
+
+impl fmt::Display for Index {
+    /// Show the reference as written, e.g. `{-2}`.
+    ///
+    /// :param f: destination formatter
+    /// :return: formatting result
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{{}}}", self.as_written())
+    }
+}
+
+/// A reference that stands for several arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Multi {
+    /// `{@}` or `{@+}`: the arguments no `{N}`/`{-N}` uses.
+    Rest {
+        /// True for `{@+}`.
+        at_least_one: bool,
+    },
+    /// `{A..B}`, both ends included. `None` means the first / the last
+    /// argument; the parser stores `{1..}` and `{..-1}` ends as `None` too, so
+    /// equal slices compare equal however they were written.
+    Slice(Option<Index>, Option<Index>),
+}
+
+impl Multi {
+    /// The set of arguments this refers to, ignoring `{@}` vs `{@+}` (which
+    /// differ only in what counts are allowed, not in what they contain).
+    ///
+    /// :return: a value equal for references to the same arguments
+    fn set(self) -> Multi {
+        match self {
+            Multi::Rest { .. } => Multi::Rest { at_least_one: false },
+            slice => slice,
+        }
+    }
+}
+
+impl fmt::Display for Multi {
+    /// Show the reference as written, e.g. `{2..-2}` or `{@+}`.
+    ///
+    /// :param f: destination formatter
+    /// :return: formatting result
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Multi::Rest { at_least_one: false } => f.write_str("{@}"),
+            Multi::Rest { at_least_one: true } => f.write_str("{@+}"),
+            Multi::Slice(start, end) => {
+                let start = start.map(Index::as_written).unwrap_or_default();
+                let end = end.map(Index::as_written).unwrap_or_default();
+                // `{..}` is not valid syntax, so the all-arguments slice shows as `{1..}`.
+                if start.is_empty() && end.is_empty() { f.write_str("{1..}") } else { write!(f, "{{{start}..{end}}}") }
+            }
+        }
+    }
+}
+
+/// One fragment of a word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     /// Literal text from the template.
     Lit(String),
-    /// The Nth runtime argument, 1-based (so `Arg(1)` is `{1}`).
-    Arg(usize),
+    /// One argument.
+    Arg(Index),
+    /// `{0}`: the alias name.
+    Name,
+    /// Several arguments; the word is repeated once per argument.
+    Multi(Multi),
 }
 
 /// A word of a command after parsing.
+///
+/// Without a [`Piece::Multi`] it becomes exactly one argv entry (an empty piece
+/// list is a deliberate empty argument, written `''` or `""`). With one, it
+/// becomes one entry per argument the reference stands for, possibly none.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Word {
-    /// Pieces concatenated into exactly one argv entry. An empty list is a
-    /// deliberate empty-string argument (written `''` or `""`).
-    Concat(Vec<Piece>),
-    /// Runtime arguments from this 1-based index onward, one argv entry each.
-    /// Expands to zero entries when there are no such arguments.
-    Splat(usize),
+pub struct Word {
+    /// The pieces, concatenated in order.
+    pub pieces: Vec<Piece>,
 }
 
 /// One program invocation; the first word is the program.
@@ -71,6 +188,97 @@ pub enum Op {
     Then,
 }
 
+/// The distinct references a template uses, which is all the arity rules and
+/// the expander need to know about it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Shape {
+    /// Every distinct `{N}` / `{-N}`.
+    indexes: Vec<Index>,
+    /// `Some` if `{@}` or `{@+}` is used; true if `{@+}` is, anywhere.
+    rest: Option<bool>,
+    /// Every distinct slice, as (start, end).
+    slices: Vec<(Option<Index>, Option<Index>)>,
+}
+
+impl Shape {
+    /// Record a reference.
+    ///
+    /// :param r: the reference
+    fn add(&mut self, r: Ref) {
+        match r {
+            Ref::Arg(index) if !self.indexes.contains(&index) => self.indexes.push(index),
+            // `{@}` and `{@+}` are the same arguments; one `+` anywhere makes
+            // at least one required, which is the safe reading.
+            Ref::Multi(Multi::Rest { at_least_one }) => self.rest = Some(self.rest.unwrap_or(false) || at_least_one),
+            Ref::Multi(Multi::Slice(start, end)) if !self.slices.contains(&(start, end)) => self.slices.push((start, end)),
+            _ => {}
+        }
+    }
+
+    /// The largest N in any `{N}`, `{-N}` or slice end.
+    ///
+    /// :return: the magnitude, 0 if there are none
+    fn max_magnitude(&self) -> usize {
+        let ends = self.slices.iter().flat_map(|(start, end)| [*start, *end]).flatten();
+        self.indexes.iter().copied().chain(ends).map(Index::magnitude).max().unwrap_or(0)
+    }
+}
+
+/// How many runtime arguments a template accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Arity {
+    /// Accepted counts below `from`, ascending.
+    counts: Vec<usize>,
+    /// If set, every count from this one upward is accepted.
+    from: Option<usize>,
+}
+
+impl Arity {
+    /// Whether a number of arguments is accepted.
+    ///
+    /// :param count: the number of arguments
+    /// :return: true if the template can run with that many
+    pub fn accepts(&self, count: usize) -> bool {
+        self.counts.contains(&count) || self.from.is_some_and(|from| count >= from)
+    }
+}
+
+impl fmt::Display for Arity {
+    /// Describe the arity in words, e.g. "exactly 1 argument" or "2 or 4
+    /// arguments".
+    ///
+    /// :param f: destination formatter
+    /// :return: formatting result
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The common shapes get their natural phrasing.
+        match (self.counts.as_slice(), self.from) {
+            ([], Some(0)) => return f.write_str("any number of arguments"),
+            ([], Some(1)) => return f.write_str("at least 1 argument"),
+            ([], Some(from)) => return write!(f, "at least {from} arguments"),
+            ([1], None) => return f.write_str("exactly 1 argument"),
+            ([only], None) => return write!(f, "exactly {only} arguments"),
+            _ => {}
+        }
+        // Anything else: runs of consecutive counts, e.g. "2 to 3 or at least 5".
+        let mut parts: Vec<String> = Vec::new();
+        let mut counts = self.counts.iter().copied().peekable();
+        while let Some(start) = counts.next() {
+            let mut end = start;
+            while let Some(next) = counts.next_if(|&c| c == end + 1) {
+                end = next;
+            }
+            parts.push(if start == end { start.to_string() } else { format!("{start} to {end}") });
+        }
+        if let Some(from) = self.from {
+            parts.push(format!("at least {from}"));
+        }
+        // Join as "a, b or c".
+        let (last, init) = parts.split_last().expect("an arity accepts some count");
+        let list = if init.is_empty() { last.clone() } else { format!("{} or {last}", init.join(", ")) };
+        write!(f, "{list} arguments")
+    }
+}
+
 /// A fully parsed template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template {
@@ -79,32 +287,11 @@ pub struct Template {
     /// Every following pipeline with the operator that precedes it.
     pub tail: Vec<(Op, Pipeline)>,
     /// True when the parser appended `{@}` itself (see [`parse`]).
-    pub implicit_splat: bool,
-}
-
-/// How many runtime arguments a template accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Arity {
-    /// Fewest arguments accepted.
-    pub min: usize,
-    /// Most arguments accepted; `None` when a splat absorbs any extras.
-    pub max: Option<usize>,
-}
-
-impl fmt::Display for Arity {
-    /// Describe the arity in words, e.g. "exactly 1 argument".
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Pick the singular form only for exactly one, matching English usage.
-        let noun = |n: usize| if n == 1 { "argument" } else { "arguments" };
-        // A missing maximum means a splat is present, so only a floor applies.
-        match self.max {
-            Some(max) => write!(f, "exactly {max} {}", noun(max)),
-            None => write!(f, "at least {} {}", self.min, noun(self.min)),
-        }
-    }
+    pub implicit_rest: bool,
+    /// The references used, for arity checks and expansion.
+    shape: Shape,
+    /// Computed once at parse time; parsing fails if no count is accepted.
+    arity: Arity,
 }
 
 /// A syntax error, located by byte offset into the template source.
@@ -112,7 +299,9 @@ impl fmt::Display for Arity {
 pub struct ParseError {
     /// Byte offset of the offending character (or the source length at end of
     /// input). Always on a char boundary, since it comes from `char_indices`.
-    pub offset: usize,
+    /// `None` for problems with the template as a whole, such as an arity that
+    /// no argument count satisfies.
+    pub offset: Option<usize>,
     /// Human-readable explanation, ideally with a hint at the fix.
     pub message: String,
 }
@@ -124,7 +313,15 @@ impl ParseError {
     /// :param message: explanation for the user
     /// :return: the error
     fn new(offset: usize, message: impl Into<String>) -> Self {
-        ParseError { offset, message: message.into() }
+        ParseError { offset: Some(offset), message: message.into() }
+    }
+
+    /// Construct an error about the template as a whole.
+    ///
+    /// :param message: explanation for the user
+    /// :return: the error
+    fn whole(message: impl Into<String>) -> Self {
+        ParseError { offset: None, message: message.into() }
     }
 
     /// Render the message with the source line and a caret under the error.
@@ -132,12 +329,18 @@ impl ParseError {
     /// :param src: the template source the offset refers to
     /// :return: a multi-line string suitable for stderr
     pub fn render(&self, src: &str) -> String {
-        // Count chars, not bytes, so the caret lines up under multibyte text.
-        // Assumption: the terminal shows one column per char, which is wrong for
-        // wide CJK glyphs; acceptable for an error caret.
-        let column = src[..self.offset].chars().count();
-        // Indent both lines equally so the caret sits under the source text.
-        format!("{}\n    {}\n    {}^", self.message, src, " ".repeat(column))
+        match self.offset {
+            Some(offset) => {
+                // Count chars, not bytes, so the caret lines up under multibyte
+                // text. Assumption: the terminal shows one column per char,
+                // which is wrong for wide CJK glyphs; acceptable for a caret.
+                let column = src[..offset].chars().count();
+                // Indent both lines equally so the caret sits under the source text.
+                format!("{}\n    {}\n    {}^", self.message, src, " ".repeat(column))
+            }
+            // No single place to point at: show the template without a caret.
+            None => format!("{}\n    {}", self.message, src),
+        }
     }
 }
 
@@ -154,10 +357,12 @@ impl fmt::Display for ParseError {
 /// An argument reference as written inside braces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ref {
-    /// `{N}`
-    Arg(usize),
-    /// `{N..}` or `{@}`
-    Splat(usize),
+    /// `{N}` or `{-N}`
+    Arg(Index),
+    /// `{0}`
+    Name,
+    /// `{@}`, `{@+}` or a slice
+    Multi(Multi),
 }
 
 /// What the lexer produces: a word or an operator.
@@ -185,8 +390,8 @@ struct WordBuilder {
     pieces: Vec<Piece>,
     /// Literal text not yet flushed into `pieces`.
     literal: String,
-    /// A splat seen in this word, with its offset for error reporting.
-    splat: Option<(usize, usize)>,
+    /// The several-argument reference in this word, if any (as its set).
+    multi: Option<Multi>,
 }
 
 impl WordBuilder {
@@ -195,7 +400,7 @@ impl WordBuilder {
     /// :param start: byte offset of the word's first character
     /// :return: the builder
     fn new(start: usize) -> Self {
-        WordBuilder { start, pieces: Vec::new(), literal: String::new(), splat: None }
+        WordBuilder { start, pieces: Vec::new(), literal: String::new(), multi: None }
     }
 
     /// Append one literal character.
@@ -209,22 +414,28 @@ impl WordBuilder {
     ///
     /// :param r: the parsed reference
     /// :param offset: byte offset of its opening brace
-    /// :return: an error if the word would contain two splats
+    /// :return: an error if the word would mix two several-argument references
     fn push_ref(&mut self, r: Ref, offset: usize) -> Result<(), ParseError> {
-        match r {
-            Ref::Arg(n) => {
-                // Close off pending literal text so ordering is preserved.
-                self.flush();
-                self.pieces.push(Piece::Arg(n));
+        // A word is repeated once per argument of its several-argument
+        // reference. Repeating the same one twice is well defined ({@}={@}
+        // gives a=a b=b), but two different ones would need a cross product or
+        // a zip of unequal lengths, and neither is an obvious reading.
+        if let Ref::Multi(multi) = r {
+            if let Some(existing) = self.multi.filter(|m| *m != multi.set()) {
+                return Err(ParseError::new(
+                    offset,
+                    format!("a word can repeat one several-argument reference (like -I{{@}} or {{@}}={{@}}), but not combine two different ones ({existing} and {multi})"),
+                ));
             }
-            Ref::Splat(from) => {
-                // A second splat would otherwise silently replace the first.
-                if self.splat.is_some() {
-                    return Err(ParseError::new(offset, "only one `{N..}` / `{@}` is allowed per word"));
-                }
-                self.splat = Some((from, offset));
-            }
+            self.multi = Some(multi.set());
         }
+        // Close off pending literal text so ordering is preserved.
+        self.flush();
+        self.pieces.push(match r {
+            Ref::Arg(index) => Piece::Arg(index),
+            Ref::Name => Piece::Name,
+            Ref::Multi(multi) => Piece::Multi(multi),
+        });
         Ok(())
     }
 
@@ -238,24 +449,34 @@ impl WordBuilder {
 
     /// Finish the word.
     ///
-    /// :return: the word, or an error if a splat was mixed with other content
-    fn finish(mut self) -> Result<Word, ParseError> {
+    /// :return: the word
+    fn finish(mut self) -> Word {
         self.flush();
-        match self.splat {
-            // A splat yields a variable number of words, so it cannot also be
-            // glued to text: `x{@}` has no single sensible meaning. (Shells
-            // glue the prefix to the first element only, a frequent surprise.)
-            Some((from, offset)) => {
-                if self.pieces.is_empty() {
-                    Ok(Word::Splat(from))
-                } else {
-                    Err(ParseError::new(offset, "`{N..}` / `{@}` must be a whole word on its own, not joined to other text"))
-                }
-            }
-            // No splat: everything concatenates into one argv entry.
-            None => Ok(Word::Concat(self.pieces)),
-        }
+        Word { pieces: self.pieces }
     }
+}
+
+/// Parse one position: `N` or `-N`, N >= 1.
+///
+/// :param text: the position text
+/// :param body: the whole reference body, for error messages
+/// :return: the index, or a message explaining why it is invalid
+fn parse_index(text: &str, body: &str) -> Result<Index, String> {
+    // Only plain decimal digits after an optional `-`, so `{+1}` or `{1x}` fail loudly.
+    let (back, digits) = match text.strip_prefix('-') {
+        Some(digits) => (true, digits),
+        None => (false, text),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("unknown reference `{{{body}}}`; expected {{N}}, {{-N}}, {{A..B}}, {{@}}, {{@+}} or {{0}}"));
+    }
+    // Overflow is the only way the parse can fail after the digit check.
+    let n: usize = digits.parse().map_err(|_| format!("the number in `{{{body}}}` is too large"))?;
+    // 0 is only meaningful alone, as `{0}` (handled by the caller).
+    if n == 0 {
+        return Err(format!("`{{{body}}}`: positions count from 1 at the front and from -1 at the back; 0 is not a position"));
+    }
+    Ok(if back { Index::Back(n) } else { Index::Front(n) })
 }
 
 /// Interpret the text between braces.
@@ -263,31 +484,47 @@ impl WordBuilder {
 /// :param body: the text between `{` and `}`
 /// :return: the reference, or a message explaining why it is invalid
 fn parse_ref_body(body: &str) -> Result<Ref, String> {
-    // `{}` is common in shell idioms (find -exec), so give it a targeted hint.
-    if body.is_empty() {
-        return Err("`{}` is not an argument reference; quote it ('{}') to pass literal braces, e.g. for find -exec".into());
+    match body {
+        // `{}` is common in shell idioms (find -exec), so give it a targeted hint.
+        "" => Err("`{}` is not an argument reference; quote it ('{}') to pass literal braces, e.g. for find -exec".into()),
+        "@" => Ok(Ref::Multi(Multi::Rest { at_least_one: false })),
+        "@+" => Ok(Ref::Multi(Multi::Rest { at_least_one: true })),
+        "0" => Ok(Ref::Name),
+        // An open-ended slice in both directions has two spellings already
+        // ({1..} and {@} when nothing else is used); a third adds nothing.
+        ".." => Err("`{..}` is not a slice; write `{1..}` for every argument, or `{@}` for those no {N} or {-N} uses".into()),
+        _ => match body.split_once("..") {
+            Some((start, end)) => parse_slice(start, end, body),
+            None => parse_index(body, body).map(Ref::Arg),
+        },
     }
-    // `{@}` is shorthand for "all arguments".
-    if body == "@" {
-        return Ok(Ref::Splat(1));
-    }
-    // A trailing `..` turns `{N}` into "N onward".
-    let (digits, is_splat) = match body.strip_suffix("..") {
-        Some(digits) => (digits, true),
-        None => (body, false),
+}
+
+/// Parse a slice's two ends.
+///
+/// :param start: text before `..` (may be empty)
+/// :param end: text after `..` (may be empty)
+/// :param body: the whole reference body, for error messages
+/// :return: the slice, or a message explaining why it is invalid
+fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
+    let start = (!start.is_empty()).then(|| parse_index(start, body)).transpose()?;
+    let end = (!end.is_empty()).then(|| parse_index(end, body)).transpose()?;
+    // Store the first/last ends as None, so `{1..}` and `{1..-1}` are equal
+    // (which matters when one word repeats the same slice twice).
+    let start = start.filter(|&s| s != Index::Front(1));
+    let end = end.filter(|&e| e != Index::Back(1));
+    // Ends counted the same way can be compared without knowing the count, so
+    // a slice that is always empty is reported now, with the inclusive rule
+    // spelled out (people arriving from Rust or Python expect exclusive ends).
+    let always_empty = match (start, end) {
+        (Some(Index::Front(a)), Some(Index::Front(b))) => a > b,
+        (Some(Index::Back(a)), Some(Index::Back(b))) => a < b,
+        _ => false,
     };
-    // Only plain decimal digits are accepted, so `{+1}` or `{1x}` fail loudly.
-    let unknown = || format!("unknown reference `{{{body}}}`; expected `{{N}}`, `{{N..}}` or `{{@}}`");
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(unknown());
+    if always_empty {
+        return Err(format!("`{{{body}}}` is always empty; slices include both ends, so {{2..4}} is the 2nd, 3rd and 4th"));
     }
-    // Overflow is the only way the parse can fail after the digit check.
-    let n: usize = digits.parse().map_err(|_| format!("argument number in `{{{body}}}` is too large"))?;
-    // There is no `{0}`: unlike bash's `$0`, the alias name isn't an argument.
-    if n == 0 {
-        return Err("arguments are numbered from 1; there is no `{0}`".into());
-    }
-    Ok(if is_splat { Ref::Splat(n) } else { Ref::Arg(n) })
+    Ok(Ref::Multi(Multi::Slice(start, end)))
 }
 
 /// Read a reference whose opening brace has just been consumed.
@@ -317,22 +554,29 @@ fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, P
 ///
 /// :param word: the current builder, taken (left as `None`)
 /// :param tokens: the output list
-/// :return: an error if the word is malformed
-fn end_word(word: &mut Option<WordBuilder>, tokens: &mut Vec<Token>) -> Result<(), ParseError> {
+fn end_word(word: &mut Option<WordBuilder>, tokens: &mut Vec<Token>) {
     // Nothing to do between words, e.g. at repeated whitespace.
     if let Some(builder) = word.take() {
         let offset = builder.start;
-        tokens.push(Token { kind: TokenKind::Word(builder.finish()?), offset });
+        tokens.push(Token { kind: TokenKind::Word(builder.finish()), offset });
     }
-    Ok(())
+}
+
+/// The lexer's output.
+struct Lexed {
+    /// Words and operators, in order.
+    tokens: Vec<Token>,
+    /// Every reference with the offset of its `{`, for whole-template checks.
+    refs: Vec<(Ref, usize)>,
 }
 
 /// Split template source into words and operators.
 ///
 /// :param src: template source
-/// :return: tokens in order
-fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
+/// :return: tokens and references, in order
+fn lex(src: &str) -> Result<Lexed, ParseError> {
     let mut tokens = Vec::new();
+    let mut refs = Vec::new();
     let mut chars = src.char_indices().peekable();
     // `Some` while inside a word. A word starts at its first character, which
     // may be a quote; that is how `''` becomes an (empty) word at all.
@@ -341,18 +585,18 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
     while let Some((offset, c)) = chars.next() {
         match c {
             // Unquoted whitespace separates words and nothing else.
-            c if c.is_whitespace() => end_word(&mut word, &mut tokens)?,
+            c if c.is_whitespace() => end_word(&mut word, &mut tokens),
 
             // `|` or `||`: operators also end the current word, so `a|b` works.
             '|' => {
-                end_word(&mut word, &mut tokens)?;
+                end_word(&mut word, &mut tokens);
                 let kind = if chars.next_if(|&(_, n)| n == '|').is_some() { TokenKind::Or } else { TokenKind::Pipe };
                 tokens.push(Token { kind, offset });
             }
 
             // Only `&&` exists; a lone `&` would mean "background" in a shell.
             '&' => {
-                end_word(&mut word, &mut tokens)?;
+                end_word(&mut word, &mut tokens);
                 if chars.next_if(|&(_, n)| n == '&').is_none() {
                     return Err(ParseError::new(offset, "a lone `&` is not supported (no background jobs); did you mean `&&`?"));
                 }
@@ -361,7 +605,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
 
             // `;` sequences unconditionally.
             ';' => {
-                end_word(&mut word, &mut tokens)?;
+                end_word(&mut word, &mut tokens);
                 tokens.push(Token { kind: TokenKind::Then, offset });
             }
 
@@ -398,6 +642,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                         Some((open, '{')) => {
                             let r = read_ref(&mut chars, open)?;
                             builder.push_ref(r, open)?;
+                            refs.push((r, open));
                         }
                         // `$` and backticks expand inside double quotes in sh, so
                         // "$1" is the shell habit most likely to slip through;
@@ -424,6 +669,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             '{' => {
                 let r = read_ref(&mut chars, offset)?;
                 word.get_or_insert_with(|| WordBuilder::new(offset)).push_ref(r, offset)?;
+                refs.push((r, offset));
             }
 
             // A stray `}` is almost always a typo like `{1}}`, so refuse it
@@ -451,8 +697,8 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
         }
     }
     // The last word has no trailing separator to end it.
-    end_word(&mut word, &mut tokens)?;
-    Ok(tokens)
+    end_word(&mut word, &mut tokens);
+    Ok(Lexed { tokens, refs })
 }
 
 /// Recursive-descent parser over the token list.
@@ -528,35 +774,241 @@ impl Parser {
     }
 }
 
+/// Reject `{N}` / `{-N}` numbering with gaps.
+///
+/// Every argument must be used, so `{2}` without `{1}` is almost certainly a
+/// typo; a slice covering the gap would technically use it, but numbering
+/// without gaps is the clearer rule.
+///
+/// :param refs: every reference with its offset
+/// :return: an error pointing at the highest-numbered reference of a gappy run
+fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
+    // Front and back numbering are checked separately, with the same rule.
+    for (back, sign) in [(false, ""), (true, "-")] {
+        // The numbers used in this direction, and where the highest first appears.
+        let used: Vec<(usize, usize)> = refs
+            .iter()
+            .filter_map(|&(r, offset)| match r {
+                Ref::Arg(Index::Front(k)) if !back => Some((k, offset)),
+                Ref::Arg(Index::Back(k)) if back => Some((k, offset)),
+                _ => None,
+            })
+            .collect();
+        let Some(&(highest, at)) = used.iter().max_by_key(|&&(k, offset)| (k, std::cmp::Reverse(offset))) else { continue };
+        if let Some(missing) = (1..highest).find(|k| !used.iter().any(|&(u, _)| u == *k)) {
+            return Err(ParseError::new(
+                at,
+                format!("`{{{sign}{highest}}}` is used but `{{{sign}{missing}}}` is not; every argument must be used, so number them without gaps"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Parse template source.
 ///
-/// If the template is a single command with no argument references at all, a
-/// `{@}` is appended, so `ll = ls -la` passes its arguments through like a
-/// shell alias. This is the one implicit rule; it only applies where the
-/// meaning is unambiguous. (With several commands, there is no obvious one to
-/// receive the arguments, so none does and extra arguments are an error.)
+/// If the template is a single command with no references at all (not even
+/// `{0}`), a `{@}` is appended, so `ll = ls -la` passes its arguments through
+/// like a shell alias. This is the one implicit rule; it only applies where
+/// the meaning is unambiguous. (With several commands, there is no obvious one
+/// to receive the arguments, so none does and extra arguments are an error.)
 ///
 /// :param src: template source
 /// :return: the parsed template
 pub fn parse(src: &str) -> Result<Template, ParseError> {
     // Lex fully first; the parser then never deals with characters.
-    let tokens = lex(src)?;
+    let Lexed { tokens, refs } = lex(src)?;
     // An empty or all-whitespace template has no command to run.
     if tokens.is_empty() {
         return Err(ParseError::new(0, "empty template"));
     }
     let mut parser = Parser { tokens: tokens.into_iter().peekable(), end: src.len() };
-    let (head, tail) = parser.list()?;
-    let mut template = Template { head, tail, implicit_splat: false };
+    let (mut head, tail) = parser.list()?;
+    check_gaps(&refs)?;
 
-    // Apply the implicit-`{@}` rule documented above. An arity of exactly zero
-    // means no references of either kind, since any splat makes `max` `None`.
-    let no_refs = template.arity() == Arity { min: 0, max: Some(0) };
-    if no_refs && template.is_simple() {
-        template.head.stages[0].words.push(Word::Splat(1));
-        template.implicit_splat = true;
+    // Collect the distinct references, applying the implicit-`{@}` rule above.
+    let mut shape = Shape::default();
+    for &(r, _) in &refs {
+        shape.add(r);
     }
-    Ok(template)
+    let implicit_rest = refs.is_empty() && tail.is_empty() && head.stages.len() == 1;
+    if implicit_rest {
+        let rest = Multi::Rest { at_least_one: false };
+        head.stages[0].words.push(Word { pieces: vec![Piece::Multi(rest)] });
+        shape.add(Ref::Multi(rest));
+    }
+    let arity = compute_arity(&shape)?;
+    Ok(Template { head, tail, implicit_rest, shape, arity })
+}
+
+/// Where each reference lands for one argument count.
+struct Layout {
+    /// Position of each `{N}` / `{-N}`.
+    index: HashMap<Index, usize>,
+    /// Positions `{@}` stands for, ascending.
+    rest: Vec<usize>,
+    /// First and last position of each slice.
+    slices: HashMap<(Option<Index>, Option<Index>), (usize, usize)>,
+}
+
+impl Layout {
+    /// The positions a several-argument reference stands for.
+    ///
+    /// :param multi: the reference
+    /// :return: 1-based positions, in order
+    fn positions(&self, multi: Multi) -> Vec<usize> {
+        match multi {
+            Multi::Rest { .. } => self.rest.clone(),
+            // Present for every slice of the template once the layout is valid.
+            Multi::Slice(start, end) => self.slices.get(&(start, end)).map_or_else(Vec::new, |&(lo, hi)| (lo..=hi).collect()),
+        }
+    }
+}
+
+/// A slice's first and last position, if it is non-empty.
+///
+/// :param slice: (start, end) ends
+/// :param count: number of arguments
+/// :return: inclusive range, or `None` if it would be empty
+fn slice_range(slice: (Option<Index>, Option<Index>), count: usize) -> Option<(usize, usize)> {
+    let lo = slice.0.map_or(Some(1), |i| i.position(count))?;
+    let hi = slice.1.map_or(Some(count), |i| i.position(count))?;
+    (count > 0 && lo <= hi).then_some((lo, hi))
+}
+
+/// Describe a set of positions for messages, e.g. "arguments 1 and 2".
+///
+/// :param positions: ascending positions, non-empty
+/// :return: the phrase
+fn describe_positions(positions: &[usize]) -> String {
+    let words: Vec<String> = positions.iter().map(usize::to_string).collect();
+    match words.split_last() {
+        Some((last, [])) => format!("argument {last}"),
+        Some((last, init)) => format!("arguments {} and {last}", init.join(", ")),
+        None => "no arguments".into(),
+    }
+}
+
+/// Lay out the references for one argument count, checking the rules that
+/// don't involve comparing counts: indexes in range and distinct, `{@+}` and
+/// slices non-empty, every argument used.
+///
+/// :param shape: the template's references
+/// :param count: number of arguments
+/// :return: the layout, or why this count doesn't work
+fn layout(shape: &Shape, count: usize) -> Result<Layout, String> {
+    // Each position may belong to at most one index ({N}/{-N}); {@} takes
+    // whatever is left.
+    let mut owner: Vec<Option<Index>> = vec![None; count + 1];
+    let mut index = HashMap::new();
+    for &i in &shape.indexes {
+        let position = i.position(count).ok_or_else(|| format!("{i} needs at least {} arguments", i.magnitude()))?;
+        if let Some(other) = owner[position] {
+            return Err(format!("{other} and {i} would both be argument {position}"));
+        }
+        owner[position] = Some(i);
+        index.insert(i, position);
+    }
+    // {@}: every position no index owns.
+    let rest: Vec<usize> = if shape.rest.is_some() { (1..=count).filter(|&p| owner[p].is_none()).collect() } else { Vec::new() };
+    if shape.rest == Some(true) && rest.is_empty() {
+        return Err("{@+} would be empty".into());
+    }
+    // Slices must be non-empty; that is what makes {2..} safe for `rm`.
+    let mut slices = HashMap::new();
+    for &slice in &shape.slices {
+        let range = slice_range(slice, count).ok_or_else(|| format!("{} would be empty", Multi::Slice(slice.0, slice.1)))?;
+        slices.insert(slice, range);
+    }
+    // Without {@}, every argument must be claimed by an index or covered by a
+    // slice; an argument that nothing uses is almost always a mistake (the
+    // `flif270 *.flif` case: silently processing only the first file).
+    if shape.rest.is_none() {
+        let unused: Vec<usize> =
+            (1..=count).filter(|&p| owner[p].is_none() && !slices.values().any(|&(lo, hi)| lo <= p && p <= hi)).collect();
+        if !unused.is_empty() {
+            return Err(format!("{} would be unused", describe_positions(&unused)));
+        }
+    }
+    Ok(Layout { index, rest, slices })
+}
+
+/// How the slices relate to the indexes and to each other at one count:
+/// which indexes each slice contains, and which slices overlap or contain
+/// which. Empty slices and out-of-range indexes count as "not contained".
+///
+/// :param shape: the template's references
+/// :param count: number of arguments
+/// :return: a comparable signature
+fn relations(shape: &Shape, count: usize) -> Vec<bool> {
+    let ranges: Vec<Option<(usize, usize)>> = shape.slices.iter().map(|&s| slice_range(s, count)).collect();
+    let inside = |p: usize, r: Option<(usize, usize)>| r.is_some_and(|(lo, hi)| lo <= p && p <= hi);
+    let mut signature = Vec::new();
+    for &range in &ranges {
+        // Membership of each index in this slice.
+        for &i in &shape.indexes {
+            signature.push(i.position(count).is_some_and(|p| inside(p, range)));
+        }
+    }
+    for (a, &first) in ranges.iter().enumerate() {
+        for &second in &ranges[a + 1..] {
+            // Overlap, and containment either way.
+            let overlap = matches!((first, second), (Some((l1, h1)), Some((l2, h2))) if l1 <= h2 && l2 <= h1);
+            let contains = |outer: Option<(usize, usize)>, inner: Option<(usize, usize)>| {
+                matches!((outer, inner), (Some((lo, hi)), Some((l, h))) if lo <= l && h <= hi)
+            };
+            signature.extend([overlap, contains(first, second), contains(second, first)]);
+        }
+    }
+    signature
+}
+
+/// Check every rule for one count, including that slices relate to the
+/// other references as they do with plenty of arguments.
+///
+/// :param shape: the template's references
+/// :param count: number of arguments
+/// :param plenty: a count at which every relation has settled (see `compute_arity`)
+/// :return: the layout, or why this count doesn't work
+fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, String> {
+    let layout = layout(shape, count)?;
+    // E.g. in `{1..3} {-1}`, with 3 arguments the slice would take the last
+    // one too, which nobody writing that template intends.
+    if relations(shape, count) != relations(shape, plenty) {
+        return Err(format!("with {count} arguments, a slice would share different arguments with the other references than with more"));
+    }
+    Ok(layout)
+}
+
+/// Work out which argument counts a template accepts.
+///
+/// Let K be the largest number in any reference. From 2K+1 arguments on,
+/// front-counted and back-counted positions can never meet and at least one
+/// argument sits between them, so every count from there up behaves the same
+/// as 2K+1 (the extra arguments are all "middle" ones, treated alike). Checking
+/// the counts 0 to 2K+1 therefore decides every count.
+///
+/// :param shape: the template's references
+/// :return: the arity, or an error if no count works
+fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
+    let plenty = 2 * shape.max_magnitude() + 1;
+    let mut counts: Vec<usize> = (0..plenty).filter(|&n| check_count(shape, n, plenty).is_ok()).collect();
+    let mut from = check_count(shape, plenty, plenty).is_ok().then_some(plenty);
+    // Fold a trailing run of accepted counts into the open-ended part, so
+    // "at least 2" isn't spelled "2, 3, 4 or at least 5".
+    while let (Some(&last), Some(start)) = (counts.last(), from) {
+        if last + 1 != start {
+            break;
+        }
+        counts.pop();
+        from = Some(last);
+    }
+    if counts.is_empty() && from.is_none() {
+        // The reason at `plenty` is the most representative one to show.
+        let reason = check_count(shape, plenty, plenty).err().unwrap_or_default();
+        return Err(ParseError::whole(format!("no number of arguments works with this template (with {plenty}: {reason})")));
+    }
+    Ok(Arity { counts, from })
 }
 
 /// One process's argv after expansion.
@@ -586,7 +1038,7 @@ impl Plan {
 /// Why a template could not be expanded with the given arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpandError {
-    /// Too few or too many arguments.
+    /// A number of arguments the template doesn't accept.
     WrongArgCount { arity: Arity, got: usize },
     /// A command expanded to no words at all (e.g. a bare `{@}` with no args).
     EmptyCommand,
@@ -606,20 +1058,6 @@ impl fmt::Display for ExpandError {
 }
 
 impl Template {
-    /// Every pipeline, head first.
-    ///
-    /// :return: iterator over pipelines
-    fn pipelines(&self) -> impl Iterator<Item = &Pipeline> {
-        std::iter::once(&self.head).chain(self.tail.iter().map(|(_, p)| p))
-    }
-
-    /// Every word of every command, in source order.
-    ///
-    /// :return: iterator over words
-    fn words(&self) -> impl Iterator<Item = &Word> {
-        self.pipelines().flat_map(|p| p.stages.iter()).flat_map(|c| c.words.iter())
-    }
-
     /// True when the template is one command with no pipes or operators.
     ///
     /// :return: whether the template is simple
@@ -627,52 +1065,29 @@ impl Template {
         self.tail.is_empty() && self.head.stages.len() == 1
     }
 
-    /// Work out how many arguments the template accepts.
-    ///
-    /// The minimum is the highest index referenced. Gaps are allowed (a template
-    /// may use `{2}` but not `{1}`), but `{2}` still requires two arguments.
-    /// Without a splat, extra arguments are an error rather than ignored: for
-    /// `flif270 *.flif`, silently processing only the first file would be the
-    /// worst possible outcome.
+    /// How many arguments the template accepts.
     ///
     /// :return: the arity
-    pub fn arity(&self) -> Arity {
-        let mut min = 0;
-        let mut unbounded = false;
-        for word in self.words() {
-            match word {
-                // A plain reference requires its argument to exist.
-                Word::Concat(pieces) => {
-                    for piece in pieces {
-                        if let Piece::Arg(n) = piece {
-                            min = min.max(*n);
-                        }
-                    }
-                }
-                // `{N..}` may be empty but requires the ones before it, so that
-                // `cmd {1} {3..}` can't skip `{2}` silently.
-                Word::Splat(from) => {
-                    unbounded = true;
-                    min = min.max(from - 1);
-                }
-            }
-        }
-        Arity { min, max: if unbounded { None } else { Some(min) } }
+    pub fn arity(&self) -> &Arity {
+        &self.arity
     }
 
     /// Substitute runtime arguments into the template.
     ///
+    /// :param name: the alias name, for `{0}`
     /// :param args: runtime arguments, excluding the alias name
     /// :return: the plan to run
-    pub fn expand(&self, args: &[OsString]) -> Result<Plan, ExpandError> {
-        // Check the count up front, so expansion below can index without checks.
-        let arity = self.arity();
-        if args.len() < arity.min || arity.max.is_some_and(|max| args.len() > max) {
-            return Err(ExpandError::WrongArgCount { arity, got: args.len() });
+    pub fn expand(&self, name: &str, args: &[OsString]) -> Result<Plan, ExpandError> {
+        // Check the count up front; an accepted count always has a layout.
+        let wrong = || ExpandError::WrongArgCount { arity: self.arity.clone(), got: args.len() };
+        if !self.arity.accepts(args.len()) {
+            return Err(wrong());
         }
+        let layout = layout(&self.shape, args.len()).map_err(|_| wrong())?;
         // Expand each pipeline stage by stage.
-        let expand_pipeline =
-            |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> { p.stages.iter().map(|c| expand_command(c, args)).collect() };
+        let expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
+            p.stages.iter().map(|c| expand_command(c, &layout, name, args)).collect()
+        };
         let head = expand_pipeline(&self.head)?;
         let tail = self.tail.iter().map(|(op, p)| Ok((*op, expand_pipeline(p)?))).collect::<Result<_, _>>()?;
         Ok(Plan { head, tail })
@@ -682,30 +1097,52 @@ impl Template {
 /// Expand one command.
 ///
 /// :param command: the parsed command
+/// :param layout: where each reference lands for this argument count
+/// :param name: the alias name, for `{0}`
 /// :param args: runtime arguments; already checked against the arity
 /// :return: the argv
-fn expand_command(command: &Command, args: &[OsString]) -> Result<Argv, ExpandError> {
+fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsString]) -> Result<Argv, ExpandError> {
     let mut argv = Vec::with_capacity(command.words.len());
     for word in &command.words {
-        match word {
-            // Each splatted argument becomes its own argv entry, unmodified.
-            Word::Splat(from) => argv.extend(args.iter().skip(from - 1).cloned()),
-            // Concatenate pieces as OsString, so non-UTF-8 filenames survive.
-            Word::Concat(pieces) => {
-                let mut entry = OsString::new();
-                for piece in pieces {
-                    match piece {
-                        Piece::Lit(text) => entry.push(text),
-                        // In bounds: `expand` checked len >= arity.min >= n.
-                        Piece::Arg(n) => entry.push(&args[n - 1]),
-                    }
+        // A several-argument reference repeats the word once per argument it
+        // stands for (the parser allows only one distinct one per word).
+        let multi = word.pieces.iter().find_map(|p| match p {
+            Piece::Multi(m) => Some(*m),
+            _ => None,
+        });
+        match multi {
+            None => argv.push(build_entry(word, layout, name, args, None)),
+            Some(multi) => {
+                for position in layout.positions(multi) {
+                    argv.push(build_entry(word, layout, name, args, Some(position)));
                 }
-                argv.push(entry);
             }
         }
     }
-    // Only possible when the whole command is a splat with nothing to splat.
+    // Only possible when every word of the command repeated zero times.
     if argv.is_empty() { Err(ExpandError::EmptyCommand) } else { Ok(argv) }
+}
+
+/// Build one argv entry from a word.
+///
+/// :param word: the word
+/// :param layout: where each reference lands
+/// :param name: the alias name, for `{0}`
+/// :param args: runtime arguments
+/// :param repeat: for a repeated word, the position this copy stands for
+/// :return: the entry, as OsString so non-UTF-8 filenames survive
+fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repeat: Option<usize>) -> OsString {
+    let mut entry = OsString::new();
+    for piece in &word.pieces {
+        match piece {
+            Piece::Lit(text) => entry.push(text),
+            Piece::Name => entry.push(name),
+            // Positions are 1-based and in range: the layout checked them.
+            Piece::Arg(index) => entry.push(&args[layout.index[index] - 1]),
+            Piece::Multi(_) => entry.push(&args[repeat.expect("repeated words get a position") - 1]),
+        }
+    }
+    entry
 }
 
 #[cfg(test)]
@@ -726,22 +1163,41 @@ mod tests {
     /// :param args: runtime arguments
     /// :return: the plan
     fn plan(src: &str, args: &[&str]) -> Plan {
-        parse(src).unwrap().expand(&os(args)).unwrap()
+        parse(src).unwrap().expand("t", &os(args)).unwrap()
+    }
+
+    /// The single command a simple template expands to.
+    ///
+    /// :param src: template source
+    /// :param args: runtime arguments
+    /// :return: its argv
+    fn argv(src: &str, args: &[&str]) -> Argv {
+        plan(src, args).head[0].clone()
+    }
+
+    /// The arity of a template, as text.
+    ///
+    /// :param src: template source
+    /// :return: e.g. "exactly 1 argument"
+    fn arity(src: &str) -> String {
+        parse(src).unwrap_or_else(|e| panic!("{src}: {e}")).arity().to_string()
     }
 
     #[test]
-    fn simple_command_gets_implicit_splat() {
+    fn simple_command_gets_implicit_rest() {
         // No references: arguments are appended like a shell alias.
-        let p = plan("ls -la", &["a", "b"]);
-        assert_eq!(p.as_simple().unwrap(), &os(&["ls", "-la", "a", "b"]));
+        assert_eq!(argv("ls -la", &["a", "b"]), os(&["ls", "-la", "a", "b"]));
+        assert!(parse("ls").unwrap().implicit_rest);
+        // `{0}` counts as a reference, so it switches the rule off.
+        assert_eq!(arity("echo {0}"), "exactly 0 arguments");
     }
 
     #[test]
     fn multi_command_without_refs_rejects_args() {
         // No obvious recipient for arguments, so they're an error.
         let t = parse("true | true").unwrap();
-        assert!(!t.implicit_splat);
-        assert!(matches!(t.expand(&os(&["x"])), Err(ExpandError::WrongArgCount { .. })));
+        assert!(!t.implicit_rest);
+        assert!(matches!(t.expand("t", &os(&["x"])), Err(ExpandError::WrongArgCount { .. })));
     }
 
     #[test]
@@ -758,22 +1214,82 @@ mod tests {
     #[test]
     fn quoting_rules() {
         // Single quotes are fully literal, braces and backslashes included.
-        assert_eq!(plan(r"echo 'a {1} \n'", &[]).head[0], os(&["echo", r"a {1} \n"]));
+        assert_eq!(argv(r"echo 'a {1} \n'", &[]), os(&["echo", r"a {1} \n"]));
         // Double quotes expand references and keep unknown escapes literal.
-        assert_eq!(plan(r#"echo "{1} \d \" \{""#, &["x"]).head[0], os(&["echo", r#"x \d " {"#]));
+        assert_eq!(argv(r#"echo "{1} \d \" \{""#, &["x"]), os(&["echo", r#"x \d " {"#]));
         // Adjacent quoted and unquoted parts form one word.
-        assert_eq!(plan(r#"echo a'b c'"d"{1}"#, &["!"]).head[0], os(&["echo", "ab cd!"]));
+        assert_eq!(argv(r#"echo a'b c'"d"{1}"#, &["!"]), os(&["echo", "ab cd!"]));
         // Empty quotes produce an empty argument rather than nothing.
-        assert_eq!(plan("printf %s '' {1}", &["x"]).head[0], os(&["printf", "%s", "", "x"]));
+        assert_eq!(argv("printf %s '' {1}", &["x"]), os(&["printf", "%s", "", "x"]));
     }
 
     #[test]
-    fn splats() {
-        // `{2..}` takes the rest, one word each; `{@}` takes everything.
-        assert_eq!(plan("cmd {1} -- {2..}", &["a", "b", "c"]).head[0], os(&["cmd", "a", "--", "b", "c"]));
-        assert_eq!(plan("cmd {@}", &[]).head[0], os(&["cmd"]));
-        // Arity reflects the floor from the splat start.
-        assert_eq!(parse("cmd {3..}").unwrap().arity(), Arity { min: 2, max: None });
+    fn back_indexes() {
+        // {-1} is the last argument, wherever it is.
+        assert_eq!(argv("cp -t {-1} {@+}", &["a", "b", "dir"]), os(&["cp", "-t", "dir", "a", "b"]));
+        assert_eq!(arity("cp -t {-1} {@+}"), "at least 2 arguments");
+        // Front and back together: exact, and never the same argument twice.
+        assert_eq!(arity("mv {1} {-1}"), "exactly 2 arguments");
+    }
+
+    #[test]
+    fn rest_is_what_indexes_leave() {
+        // {@} excludes arguments that {N}/{-N} use, so nothing is passed twice.
+        assert_eq!(argv("cmd {1} -- {@}", &["a", "b", "c"]), os(&["cmd", "a", "--", "b", "c"]));
+        assert_eq!(argv("cmd {1} -- {@}", &["a"]), os(&["cmd", "a", "--"]));
+        assert_eq!(arity("cmd {1} {@}"), "at least 1 argument");
+        // {@+} demands at least one.
+        assert_eq!(arity("cmd {1} {@+}"), "at least 2 arguments");
+        assert!(parse("cmd {@+}").unwrap().expand("t", &[]).is_err());
+        assert_eq!(arity("cmd {@}"), "any number of arguments");
+    }
+
+    #[test]
+    fn slices_are_inclusive_and_never_empty() {
+        // Both ends included, counted like {N} and {-N}.
+        assert_eq!(argv("echo {1} {2..3}", &["a", "b", "c"]), os(&["echo", "a", "b", "c"]));
+        assert_eq!(argv("echo {..-2} -- {-1}", &["a", "b", "c"]), os(&["echo", "a", "b", "--", "c"]));
+        // {2..} needs at least one argument to stand for: `rm {1} {2..}` with
+        // one argument is an error, not `rm a`.
+        assert_eq!(arity("cmd {1} {2..}"), "at least 2 arguments");
+        // Slices claim nothing, so they may overlap indexes on purpose.
+        assert_eq!(argv("echo {1} {1..}", &["a", "b"]), os(&["echo", "a", "a", "b"]));
+    }
+
+    #[test]
+    fn slice_overlap_must_not_shift_with_the_count() {
+        // With 3 the slice would swallow {-1}; with 5 the 4th would be unused.
+        assert_eq!(arity("cmd {1..3} {-1}"), "exactly 4 arguments");
+        let t = parse("cmd {1..3} {-1}").unwrap();
+        assert_eq!(t.expand("t", &os(&["a", "b", "c", "d"])).unwrap().head[0], os(&["cmd", "a", "b", "c", "d"]));
+    }
+
+    #[test]
+    fn words_repeat_per_argument() {
+        // -I{@} gives one -I per argument, and nothing at all for none.
+        assert_eq!(argv("gcc -I{@} -c {-1}", &["a", "b", "x.c"]), os(&["gcc", "-Ia", "-Ib", "-c", "x.c"]));
+        assert_eq!(argv("gcc -I{@} -c {-1}", &["x.c"]), os(&["gcc", "-c", "x.c"]));
+        // The same reference twice in one word stays in step.
+        assert_eq!(argv("env {@}={@}", &["a", "b"]), os(&["env", "a=a", "b=b"]));
+        // So does a slice written two ways ({1..} is {1..-1}).
+        assert_eq!(argv("echo {1..}:{1..-1}", &["a", "b"]), os(&["echo", "a:a", "b:b"]));
+        // A dangerous prefix vanishes rather than standing alone.
+        assert_eq!(argv("rm -rf /{@} {0}", &[]), os(&["rm", "-rf", "t"]));
+    }
+
+    #[test]
+    fn alias_name_reference() {
+        assert_eq!(argv("echo {0}: {1}", &["x"]), os(&["echo", "t:", "x"]));
+    }
+
+    #[test]
+    fn chunked_symlink_case() {
+        // poolcmd2 -c 5: several links, then the source last.
+        let src = "rm -f {@} && symlink {-1} {@}";
+        assert_eq!(arity(src), "at least 1 argument");
+        let p = plan(src, &["bin/a", "bin/b", "src"]);
+        assert_eq!(p.head[0], os(&["rm", "-f", "bin/a", "bin/b"]));
+        assert_eq!(p.tail[0].1[0], os(&["symlink", "src", "bin/a", "bin/b"]));
     }
 
     #[test]
@@ -791,16 +1307,35 @@ mod tests {
 
     #[test]
     fn arity_errors() {
-        // Too few and too many are both rejected, with the arity in the error.
-        let t = parse("echo {2}").unwrap();
-        assert_eq!(t.expand(&os(&["a"])), Err(ExpandError::WrongArgCount { arity: Arity { min: 2, max: Some(2) }, got: 1 }));
-        assert!(t.expand(&os(&["a", "b", "c"])).is_err());
+        // Too few and too many are both rejected, with the arity in the message.
+        let t = parse("echo {1} {2}").unwrap();
+        let err = t.expand("t", &os(&["a"])).unwrap_err();
+        assert_eq!(err.to_string(), "expected exactly 2 arguments, got 1");
+        assert!(t.expand("t", &os(&["a", "b", "c"])).is_err());
     }
 
     #[test]
-    fn empty_command_from_splat() {
-        // A command that is only a splat needs at least one argument to run.
-        assert_eq!(parse("{@}").unwrap().expand(&[]), Err(ExpandError::EmptyCommand));
+    fn arity_phrasing() {
+        // Non-contiguous arities are spelled out rather than approximated.
+        let odd = Arity { counts: vec![2, 4, 5], from: Some(7) };
+        assert_eq!(odd.to_string(), "2, 4 to 5 or at least 7 arguments");
+        assert!(odd.accepts(5) && !odd.accepts(6) && odd.accepts(70));
+    }
+
+    #[test]
+    fn empty_command_from_rest() {
+        // A command that is only {@} needs at least one argument to run.
+        assert_eq!(parse("{@}").unwrap().expand("t", &[]), Err(ExpandError::EmptyCommand));
+    }
+
+    #[test]
+    fn templates_no_count_can_satisfy() {
+        // Arguments 1 and 2 are never used, whatever the count.
+        let err = parse("cmd {3..}").unwrap_err();
+        assert_eq!(err.offset, None);
+        assert!(err.message.contains("arguments 1 and 2 would be unused"), "{}", err.message);
+        // {1} and {-1} are distinct arguments, but nothing uses the middle.
+        assert_eq!(arity("cmd {1} {-1}"), "exactly 2 arguments");
     }
 
     #[test]
@@ -810,12 +1345,20 @@ mod tests {
             ("echo $1", 5),
             (r#"ffmpeg -i "$1""#, 11),
             (r#"echo "a `date`""#, 8),
-            ("echo {0}", 5),
+            ("echo {-0}", 5),
             ("echo {x}", 5),
+            ("echo {+1}", 5),
             ("echo {1", 5),
             ("echo }", 5),
             ("echo 'oops", 5),
-            ("echo x{@}", 6),
+            ("echo {2}", 5),
+            ("echo {1} {3} {1}", 9),
+            ("echo {-2}", 5),
+            ("echo {..}", 5),
+            ("echo {3..2}", 5),
+            ("echo {-1..-2}", 5),
+            ("echo {1..0}", 5),
+            ("echo {@}{1..}", 8),
             ("a | | b", 4),
             ("a &", 2),
             ("ls *.txt", 3),
@@ -826,18 +1369,24 @@ mod tests {
         ];
         for (src, offset) in cases {
             let err = parse(src).expect_err(src);
-            assert_eq!(err.offset, offset, "{src}: {}", err.message);
+            assert_eq!(err.offset, Some(offset), "{src}: {}", err.message);
         }
+    }
+
+    #[test]
+    fn inclusive_rule_is_spelled_out() {
+        // People arriving from Rust or Python expect exclusive ends.
+        assert!(parse("echo {3..2}").unwrap_err().message.contains("include both ends"));
     }
 
     #[test]
     fn escaped_specials_are_literal() {
         // Escaping or quoting gets any reserved character through verbatim.
-        assert_eq!(plan(r"find . -exec rm '{}' \;", &[]).head[0], os(&["find", ".", "-exec", "rm", "{}", ";"]));
-        assert_eq!(plan(r"echo \$HOME '*' \{1\}", &[]).head[0], os(&["echo", "$HOME", "*", "{1}"]));
+        assert_eq!(argv(r"find . -exec rm '{}' \;", &[]), os(&["find", ".", "-exec", "rm", "{}", ";"]));
+        assert_eq!(argv(r"echo \$HOME '*' \{1\}", &[]), os(&["echo", "$HOME", "*", "{1}"]));
         // Inside double quotes `$` and backticks need a backslash, as in sh;
         // single quotes keep them literal with no escaping at all.
-        assert_eq!(plan(r#"echo "\$1 \`x\`" '$2'"#, &[]).head[0], os(&["echo", "$1 `x`", "$2"]));
+        assert_eq!(argv(r#"echo "\$1 \`x\`" '$2'"#, &[]), os(&["echo", "$1 `x`", "$2"]));
     }
 
     #[test]
@@ -845,15 +1394,18 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         // Filenames need not be UTF-8 on Unix; they must pass through byte-exact.
         let raw = std::ffi::OsStr::from_bytes(b"caf\xe9.mkv").to_os_string();
-        let p = parse("ffmpeg -i {1} {1}.out").unwrap().expand(std::slice::from_ref(&raw)).unwrap();
+        let p = parse("ffmpeg -i {1} {1}.out").unwrap().expand("t", std::slice::from_ref(&raw)).unwrap();
         assert_eq!(p.head[0][2], raw);
         assert_eq!(p.head[0][3].as_bytes(), b"caf\xe9.mkv.out");
     }
 
     #[test]
     fn render_places_caret() {
-        // The caret line should align with the offending column.
+        // The caret line should align with the offending column; whole-template
+        // errors show the template without one.
         let err = parse("echo $1").unwrap_err();
         assert!(err.render("echo $1").ends_with("\n    echo $1\n         ^"));
+        let whole = parse("cmd {3..}").unwrap_err();
+        assert!(whole.render("cmd {3..}").ends_with("\n    cmd {3..}"));
     }
 }

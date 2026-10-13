@@ -2,10 +2,13 @@
 #
 # One per line, `name = template`.
 #
-# {1}, {2}, ...  the alias's arguments (1-based)
-# {2..}          the second argument onward, one word each
-# {@}            all arguments, one word each
+# {1}, {2}, ...  the alias's arguments, from the front
+# {-1}           the last argument ({-2} the one before, ...)
+# {@}, {@+}      every argument no {N}/{-N} uses (zero or more / at least one)
+# {2..}, {..-2}  slices, both ends included: from the 2nd / all but the last
 # | && || ;      pipes and sequencing, as in sh
+#
+# `aliasmux --help` has the full syntax.
 #
 # Quote with '...' or "..." as in sh; references still work inside "...".
 # A single command with no references gets its arguments appended (like a

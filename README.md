@@ -100,22 +100,40 @@ up stdin, so the template's own commands then see stdin at end of file.
 
 ## Template syntax
 
+`aliasmux --help` prints this too.
+
 | Syntax | Meaning |
 |---|---|
-| `{1}`, `{2}`, ... | Nth argument; can be glued to text: `{1}.mkv` |
-| `{2..}` | 2nd argument onward, one word each (must be a whole word) |
-| `{@}` | all arguments, one word each |
+| `{1}`, `{2}`, ... | arguments counted from the front; can be glued to text: `{1}.mkv` |
+| `{-1}`, `{-2}`, ... | arguments counted from the back: `{-1}` is the last |
+| `{@}` | every argument no `{N}` or `{-N}` uses, zero or more |
+| `{@+}` | the same, but at least one is required |
+| `{A..B}` | a slice: arguments A **through** B (both ends included), counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-2}` all but the last |
+| `{0}` | the alias name |
 | `a \| b` | pipe |
 | `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
 | `'...'` | fully literal |
-| `"..."` | literal except `{N}` and the escapes `\" \\ \{ \} \$ \`` |
+| `"..."` | literal except references and the escapes `\" \\ \{ \} \$ \`` |
 | `\x` | literal `x` |
 
-- Arguments are substituted straight into argv, so a filename with spaces is
-  always one word. No quoting is ever needed around `{1}`.
-- A single command with no references gets its arguments appended, like a shell
-  alias (`ll` above). Otherwise the argument count must match. `flif270 *.flif`
-  is an error, not "process the first file".
+- A one-argument reference is substituted straight into argv, so a filename
+  with spaces is always one word. No quoting is ever needed around `{1}`.
+- A word containing `{@}`, `{@+}` or a slice is repeated once per argument:
+  `-I{@}` gives `-Ia -Ib`, and nothing at all when there are none (so
+  `rm -rf /{@}` with no arguments never becomes `rm -rf /`). The same
+  reference may appear twice in a word (`{@}={@}` gives `a=a b=b`), but two
+  different ones may not.
+- Slices claim nothing, so they may overlap the other references on purpose
+  (`{1} {1..}`), and they are never empty: `rm {2..}` needs a second argument.
+- Every argument must be used, and `{N}` / `{-N}` numbering has no gaps
+  (`{2}` needs `{1}`). The count is exact unless `{@}`, `{@+}` or a slice is
+  used, so `flif270 *.flif` is an error, not "process the first file".
+  A count at which a slice would overlap the other references differently
+  than with more arguments is rejected too: `{1..3} {-1}` takes exactly 4,
+  since with 3 the slice would include the last argument. A template that no
+  count satisfies is refused when the alias is created.
+- A single command with no references gets `{@}` appended, like a shell
+  alias (`ll` above).
 - `$`, backticks, globs, redirection, `( )` and a lone `&` are errors rather
   than silently passed through. Quote or escape them to pass them literally;
   `$` and backticks need `\$` and `` \` `` even inside double quotes, as in sh.
