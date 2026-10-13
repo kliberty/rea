@@ -225,6 +225,24 @@ pub fn run_plan(alias: &str, plan: &Plan) -> Outcome {
     outcome
 }
 
+/// Let SIGPIPE end this process quietly, as it does other Unix tools.
+///
+/// Rust's std sets SIGPIPE to "ignored" before `main`, so writing to a closed
+/// pipe returns an error instead, and `println!` turns that error into a
+/// panic: `aliasmux list | head` would print "failed printing to stdout".
+/// Restoring the default makes the process simply end, as `ls | head` does.
+///
+/// Only the `aliasmux` tool needs this. The stub never writes to stdout
+/// itself, and the commands it starts already get SIGPIPE back at its default
+/// from `Command` (see `exec_single`).
+pub fn restore_default_sigpipe() {
+    // SAFETY: a plain disposition change with no handler; we are still
+    // single-threaded at this point (called first thing in `main`).
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 /// Signal handler that does nothing.
 ///
 /// :param _signal: the signal number (unused)

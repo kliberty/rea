@@ -480,3 +480,14 @@ fn template_syntax_is_in_the_long_help() {
     }
     assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
 }
+
+#[test]
+fn closed_stdout_ends_quietly_instead_of_panicking() {
+    // Like any Unix tool, `aliasmux explain ... | head` must just stop when the
+    // reader goes away. The output (~200 KB) is far larger than a pipe buffer,
+    // so the write is certain to happen after `head -c 1` has exited.
+    let script = r#""$0" explain -t 'echo {@}' $(seq 100000 130000) | head -c 1 >/dev/null"#;
+    let out = Command::new("sh").args(["-c", script, env!("CARGO_BIN_EXE_aliasmux")]).output().unwrap();
+    assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "");
+}
