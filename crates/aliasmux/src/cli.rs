@@ -38,9 +38,9 @@ Template syntax:
   {-1} {-2} ...   arguments counted from the back: {-1} is the last
   {@}             every argument no {N} or {-N} uses, zero or more
   {@+}            the same, but at least one is required
-  {A..B}          a slice: arguments A through B, both ends included, each
+  {A..B}          a slice: from argument A up to but not including B, each
                   counted like {N} or {-N}. Either end may be left out:
-                  {2..} is the 2nd onward, {..-2} all but the last. Slices
+                  {2..} is the 2nd onward, {..-1} all but the last. Slices
                   are never empty, and may overlap the other references.
   {0}             the alias name
 

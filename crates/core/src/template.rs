@@ -17,9 +17,10 @@
 //!   the back (`{-1}` is the last)
 //! * `{@}`: every argument that no `{N}` or `{-N}` uses, zero or more;
 //!   `{@+}` is the same but requires at least one
-//! * `{A..B}`: a slice, arguments A through B with both ends included, each
-//!   end counted like `{N}` / `{-N}` and either one optional. Slices claim
-//!   nothing (they may overlap other references) and are never empty.
+//! * `{A..B}`: a slice, from argument A up to but not including argument B,
+//!   each end counted like `{N}` / `{-N}` and either one optional: `{2..}` is
+//!   the 2nd onward, `{..-1}` all but the last. Slices claim nothing (they may
+//!   overlap other references) and are never empty.
 //! * `{0}`: the alias name
 //!
 //! A one-argument reference always yields exactly one argv entry. A word that
@@ -101,9 +102,10 @@ pub enum Multi {
         /// True for `{@+}`.
         at_least_one: bool,
     },
-    /// `{A..B}`, both ends included. `None` means the first / the last
-    /// argument; the parser stores `{1..}` and `{..-1}` ends as `None` too, so
-    /// equal slices compare equal however they were written.
+    /// `{A..B}`: from A up to but not including B. `None` means from the
+    /// first argument / through the last one. The parser stores a `{1..`
+    /// start as `None` too, so equal slices compare equal however written.
+    /// (No end is equivalent to `None`: `{..-1}` stops before the last.)
     Slice(Option<Index>, Option<Index>),
 }
 
@@ -509,20 +511,21 @@ fn parse_ref_body(body: &str) -> Result<Ref, String> {
 fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
     let start = (!start.is_empty()).then(|| parse_index(start, body)).transpose()?;
     let end = (!end.is_empty()).then(|| parse_index(end, body)).transpose()?;
-    // Store the first/last ends as None, so `{1..}` and `{1..-1}` are equal
-    // (which matters when one word repeats the same slice twice).
+    // Store a `{1..` start as None, so `{1..3}` and `{..3}` are equal (which
+    // matters when one word repeats the same slice twice).
     let start = start.filter(|&s| s != Index::Front(1));
-    let end = end.filter(|&e| e != Index::Back(1));
     // Ends counted the same way can be compared without knowing the count, so
-    // a slice that is always empty is reported now, with the inclusive rule
-    // spelled out (people arriving from Rust or Python expect exclusive ends).
+    // a slice that is always empty is reported now, with the end rule spelled
+    // out. Constraint on change: ends were inclusive at first, and `{-1}
+    // {..-1}` then passed the last argument twice, against everyone's reading
+    // of it (and against Python's [:-1]); exclusive ends it is.
     let always_empty = match (start, end) {
-        (Some(Index::Front(a)), Some(Index::Front(b))) => a > b,
-        (Some(Index::Back(a)), Some(Index::Back(b))) => a < b,
+        (Some(Index::Front(a)), Some(Index::Front(b))) => a >= b,
+        (Some(Index::Back(a)), Some(Index::Back(b))) => a <= b,
         _ => false,
     };
     if always_empty {
-        return Err(format!("`{{{body}}}` is always empty; slices include both ends, so {{2..4}} is the 2nd, 3rd and 4th"));
+        return Err(format!("`{{{body}}}` is always empty; a slice stops before its end, so {{2..4}} is the 2nd and 3rd"));
     }
     Ok(Ref::Multi(Multi::Slice(start, end)))
 }
@@ -865,15 +868,34 @@ impl Layout {
     }
 }
 
+/// Where a slice's end falls: the slice stops just before this position.
+///
+/// :param end: the end as written, or `None` for "through the last"
+/// :param count: number of arguments
+/// :return: the stopping position (up to count + 1), or `None` if the end
+///     names an argument that can't exist at this count
+fn stop_position(end: Option<Index>, count: usize) -> Option<usize> {
+    match end {
+        // No end: stop after the last argument.
+        None => Some(count + 1),
+        // `{..B}` may name the position just past the last argument: with 3
+        // arguments, `{..4}` is all three, stopping before a 4th that isn't
+        // there. One further would be a gap, so it doesn't fit.
+        Some(Index::Front(b)) => (b <= count + 1).then_some(b),
+        Some(back) => back.position(count),
+    }
+}
+
 /// A slice's first and last position, if it is non-empty.
 ///
-/// :param slice: (start, end) ends
+/// :param slice: (start, end) ends; the end is exclusive
 /// :param count: number of arguments
-/// :return: inclusive range, or `None` if it would be empty
+/// :return: first and last position, both included, or `None` if empty
 fn slice_range(slice: (Option<Index>, Option<Index>), count: usize) -> Option<(usize, usize)> {
     let lo = slice.0.map_or(Some(1), |i| i.position(count))?;
-    let hi = slice.1.map_or(Some(count), |i| i.position(count))?;
-    (count > 0 && lo <= hi).then_some((lo, hi))
+    let stop = stop_position(slice.1, count)?;
+    // lo >= 1 and stop <= count + 1, so a non-empty range is in bounds.
+    (lo < stop).then_some((lo, stop - 1))
 }
 
 /// Describe a set of positions for messages, e.g. "arguments 1 and 2".
@@ -972,7 +994,7 @@ fn relations(shape: &Shape, count: usize) -> Vec<bool> {
 /// :return: the layout, or why this count doesn't work
 fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, String> {
     let layout = layout(shape, count)?;
-    // E.g. in `{1..3} {-1}`, with 3 arguments the slice would take the last
+    // E.g. in `{1..4} {-1}`, with 3 arguments the slice would take the last
     // one too, which nobody writing that template intends.
     if relations(shape, count) != relations(shape, plenty) {
         return Err(format!("with {count} arguments, a slice would share different arguments with the other references than with more"));
@@ -1245,10 +1267,12 @@ mod tests {
     }
 
     #[test]
-    fn slices_are_inclusive_and_never_empty() {
-        // Both ends included, counted like {N} and {-N}.
-        assert_eq!(argv("echo {1} {2..3}", &["a", "b", "c"]), os(&["echo", "a", "b", "c"]));
-        assert_eq!(argv("echo {..-2} -- {-1}", &["a", "b", "c"]), os(&["echo", "a", "b", "--", "c"]));
+    fn slices_stop_before_their_end_and_are_never_empty() {
+        // Start included, end not, both counted like {N} and {-N}.
+        assert_eq!(argv("echo {1} {2..4}", &["a", "b", "c"]), os(&["echo", "a", "b", "c"]));
+        assert_eq!(argv("echo {..-1} -- {-1}", &["a", "b", "c"]), os(&["echo", "a", "b", "--", "c"]));
+        // The case that settled it: the last argument, then all the others.
+        assert_eq!(argv("echo {-1} {..-1}", &["1", "2", "3", "4", "5"]), os(&["echo", "5", "1", "2", "3", "4"]));
         // {2..} needs at least one argument to stand for: `rm {1} {2..}` with
         // one argument is an error, not `rm a`.
         assert_eq!(arity("cmd {1} {2..}"), "at least 2 arguments");
@@ -1259,8 +1283,8 @@ mod tests {
     #[test]
     fn slice_overlap_must_not_shift_with_the_count() {
         // With 3 the slice would swallow {-1}; with 5 the 4th would be unused.
-        assert_eq!(arity("cmd {1..3} {-1}"), "exactly 4 arguments");
-        let t = parse("cmd {1..3} {-1}").unwrap();
+        assert_eq!(arity("cmd {1..4} {-1}"), "exactly 4 arguments");
+        let t = parse("cmd {1..4} {-1}").unwrap();
         assert_eq!(t.expand("t", &os(&["a", "b", "c", "d"])).unwrap().head[0], os(&["cmd", "a", "b", "c", "d"]));
     }
 
@@ -1271,8 +1295,8 @@ mod tests {
         assert_eq!(argv("gcc -I{@} -c {-1}", &["x.c"]), os(&["gcc", "-c", "x.c"]));
         // The same reference twice in one word stays in step.
         assert_eq!(argv("env {@}={@}", &["a", "b"]), os(&["env", "a=a", "b=b"]));
-        // So does a slice written two ways ({1..} is {1..-1}).
-        assert_eq!(argv("echo {1..}:{1..-1}", &["a", "b"]), os(&["echo", "a:a", "b:b"]));
+        // So does a slice written two ways ({1..-1} is {..-1}).
+        assert_eq!(argv("echo {1..-1}:{..-1} {-1}", &["a", "b", "c"]), os(&["echo", "a:a", "b:b", "c"]));
         // A dangerous prefix vanishes rather than standing alone.
         assert_eq!(argv("rm -rf /{@} {0}", &[]), os(&["rm", "-rf", "t"]));
     }
@@ -1356,7 +1380,9 @@ mod tests {
             ("echo {-2}", 5),
             ("echo {..}", 5),
             ("echo {3..2}", 5),
+            ("echo {2..2}", 5),
             ("echo {-1..-2}", 5),
+            ("echo {-1..-1}", 5),
             ("echo {1..0}", 5),
             ("echo {@}{1..}", 8),
             ("a | | b", 4),
@@ -1374,9 +1400,9 @@ mod tests {
     }
 
     #[test]
-    fn inclusive_rule_is_spelled_out() {
-        // People arriving from Rust or Python expect exclusive ends.
-        assert!(parse("echo {3..2}").unwrap_err().message.contains("include both ends"));
+    fn end_rule_is_spelled_out() {
+        // Whoever writes an always-empty slice gets the rule with the error.
+        assert!(parse("echo {2..2}").unwrap_err().message.contains("stops before its end"));
     }
 
     #[test]

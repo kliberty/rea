@@ -5,7 +5,7 @@
 # {1}, {2}, ...  the alias's arguments, from the front
 # {-1}           the last argument ({-2} the one before, ...)
 # {@}, {@+}      every argument no {N}/{-N} uses (zero or more / at least one)
-# {2..}, {..-2}  slices, both ends included: from the 2nd / all but the last
+# {2..}, {..-1}  slices, stopping before the end: from the 2nd / all but the last
 # | && || ;      pipes and sequencing, as in sh
 #
 # `aliasmux --help` has the full syntax.

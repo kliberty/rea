@@ -476,7 +476,7 @@ fn template_syntax_is_in_the_long_help() {
     // `--help` (long) carries the full syntax; `-h` points at it.
     for args in [&["--help"][..], &["new", "--help"], &["eval", "--help"]] {
         let help = stdout(&bin().args(args).output().unwrap());
-        assert!(help.contains("{A..B}") && help.contains("{@+}") && help.contains("both ends"), "{args:?}: {help}");
+        assert!(help.contains("{A..B}") && help.contains("{@+}") && help.contains("up to but not including"), "{args:?}: {help}");
     }
     assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
 }

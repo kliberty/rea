@@ -108,7 +108,7 @@ up stdin, so the template's own commands then see stdin at end of file.
 | `{-1}`, `{-2}`, ... | arguments counted from the back: `{-1}` is the last |
 | `{@}` | every argument no `{N}` or `{-N}` uses, zero or more |
 | `{@+}` | the same, but at least one is required |
-| `{A..B}` | a slice: arguments A **through** B (both ends included), counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-2}` all but the last |
+| `{A..B}` | a slice: from argument A up to but **not including** B, counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-1}` all but the last |
 | `{0}` | the alias name |
 | `a \| b` | pipe |
 | `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
@@ -129,7 +129,7 @@ up stdin, so the template's own commands then see stdin at end of file.
   (`{2}` needs `{1}`). The count is exact unless `{@}`, `{@+}` or a slice is
   used, so `flif270 *.flif` is an error, not "process the first file".
   A count at which a slice would overlap the other references differently
-  than with more arguments is rejected too: `{1..3} {-1}` takes exactly 4,
+  than with more arguments is rejected too: `{1..4} {-1}` takes exactly 4,
   since with 3 the slice would include the last argument. A template that no
   count satisfies is refused when the alias is created.
 - A single command with no references gets `{@}` appended, like a shell
