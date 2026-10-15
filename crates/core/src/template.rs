@@ -902,19 +902,6 @@ fn slice_range(slice: (Option<Index>, Option<Index>), count: usize) -> Option<(u
     (lo < stop).then_some((lo, stop - 1))
 }
 
-/// Describe a set of positions for messages, e.g. "arguments 1 and 2".
-///
-/// :param positions: ascending positions, non-empty
-/// :return: the phrase
-fn describe_positions(positions: &[usize]) -> String {
-    let words: Vec<String> = positions.iter().map(usize::to_string).collect();
-    match words.split_last() {
-        Some((last, [])) => format!("argument {last}"),
-        Some((last, init)) => format!("arguments {} and {last}", init.join(", ")),
-        None => "no arguments".into(),
-    }
-}
-
 /// Why one argument count doesn't work.
 enum Problem {
     /// These positions would be used by nothing. Kept as positions rather
@@ -1089,38 +1076,36 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
 ///
 /// At `plenty` (2K+1), positions 1..=K are only reachable as `{N}`, the last K
 /// only as `{-N}`, and the one in between stands for every middle argument;
-/// so each unused position has a count-independent name.
+/// so each unused position has a count-independent name, written the way a
+/// template would refer to it.
+///
+/// Constraint on change: this states the problem and nothing more. It used to
+/// suggest `{2..}` for a slice ending at `{-1}`, but that is only one fix
+/// (adding `{-1}` or `{@}` are others), so the suggestion was more misleading
+/// than helpful.
 ///
 /// :param shape: the template's references
 /// :param positions: unused positions at `plenty`, ascending
 /// :param plenty: the count they were found at
-/// :return: e.g. "argument 1 and the last argument would never be used"
+/// :return: e.g. "nothing uses arguments {1} and {-1}"
 fn describe_unused(shape: &Shape, positions: &[usize], plenty: usize) -> String {
     let k = shape.max_magnitude();
-    let front: Vec<usize> = positions.iter().copied().filter(|&p| p <= k).collect();
-    let back: Vec<usize> = positions.iter().filter(|&&p| p > plenty - k).map(|&p| plenty + 1 - p).collect();
+    // Front positions, then the middle (one name for all of it), then the
+    // back, which keeps argument order.
+    let mut names: Vec<String> = positions.iter().filter(|&&p| p <= k).map(|p| format!("{{{p}}}")).collect();
     let middle = positions.iter().any(|&p| p > k && p <= plenty - k);
-    // Front first, then the middle, then the back, in argument order.
-    let mut parts = Vec::new();
-    if !front.is_empty() {
-        parts.push(describe_positions(&front));
-    }
     if middle {
-        parts.push("the arguments in between".to_owned());
+        names.push("the ones in between".to_owned());
     }
-    parts.extend(back.iter().map(|&j| if j == 1 { "the last argument".to_owned() } else { format!("argument -{j}") }));
-    let (last, init) = parts.split_last().expect("there is an unused position");
-    let list = if init.is_empty() { last.clone() } else { format!("{} and {last}", init.join(", ")) };
-    // The usual cause of an unused tail: a slice ending at {-N}, read as if
-    // it included its end. Show the spelling that runs through the last.
-    let hint = shape
-        .slices
-        .iter()
-        .find(|(_, end)| matches!(end, Some(Index::Back(_))))
-        .filter(|_| !back.is_empty())
-        .map(|&(start, _)| format!("; a slice stops before its end, so {} runs through the last argument", Multi::Slice(start, None)))
-        .unwrap_or_default();
-    format!("{list} would never be used{hint}")
+    names.extend(positions.iter().filter(|&&p| p > plenty - k).map(|&p| format!("{{-{}}}", plenty + 1 - p)));
+    match names.split_last() {
+        // Only the middle: no reference names it, so say what it is.
+        Some((_, [])) if middle => "nothing uses the arguments in between".to_owned(),
+        Some((only, [])) => format!("nothing uses argument {only}"),
+        Some((last, init)) => format!("nothing uses arguments {} and {last}", init.join(", ")),
+        // Unreachable: there is at least one unused position.
+        None => "some arguments would never be used".to_owned(),
+    }
 }
 
 /// One process's argv after expansion.
@@ -1456,7 +1441,10 @@ mod tests {
         assert!(parse("cp {1} {3} {@}").is_err());
         // With the gap covered, the last argument is still unused here.
         let err = parse("echo a {2..-1} {1} {3}").unwrap_err();
-        assert!(err.message.contains("the last argument would never be used"), "{}", err.message);
+        assert!(err.message.ends_with(": nothing uses argument {-1}"), "{}", err.message);
+        // {@} can't fill a gap between references, but it can take what's
+        // left at the end, which settles the last argument.
+        assert_eq!(arity("echo a {2..-1} {1} {3} {@}"), "at least 4 arguments");
     }
 
     #[test]
@@ -1464,15 +1452,11 @@ mod tests {
         // Arguments 1 and 2 are never used, whatever the count.
         let err = parse("cmd {3..}").unwrap_err();
         assert_eq!(err.offset, None);
-        assert!(err.message.ends_with(": arguments 1 and 2 would never be used"), "{}", err.message);
+        assert!(err.message.ends_with(": nothing uses arguments {1} and {2}"), "{}", err.message);
         // A slice ending at {-1} leaves the last argument out; the message
-        // names it without an internal count, and gives the right spelling.
+        // names it as a template would, without an internal count or a fix.
         let err = parse("echo a {2..-1}").unwrap_err();
-        assert_eq!(
-            err.message,
-            "no number of arguments works with this template: argument 1 and the last argument would never be used; \
-             a slice stops before its end, so {2..} runs through the last argument"
-        );
+        assert_eq!(err.message, "no number of arguments works with this template: nothing uses arguments {1} and {-1}");
         // {1} and {-1} are distinct arguments, but nothing uses the middle.
         assert_eq!(arity("cmd {1} {-1}"), "exactly 2 arguments");
     }
