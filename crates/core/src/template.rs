@@ -777,11 +777,12 @@ impl Parser {
     }
 }
 
-/// Reject `{N}` / `{-N}` numbering with gaps.
+/// Reject `{N}` / `{-N}` numbering with gaps, in templates without slices.
 ///
-/// Every argument must be used, so `{2}` without `{1}` is almost certainly a
-/// typo; a slice covering the gap would technically use it, but numbering
-/// without gaps is the clearer rule.
+/// `{3}` without `{2}` is almost certainly a typo. A slice may cover the gap
+/// instead (`{1} {2..3} {3}`), but whether it does depends on the argument
+/// count, so templates with slices are checked per count in `layout`; this
+/// static check only exists to point a caret at the problem when it can.
 ///
 /// :param refs: every reference with its offset
 /// :return: an error pointing at the highest-numbered reference of a gappy run
@@ -801,7 +802,7 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
         if let Some(missing) = (1..highest).find(|k| !used.iter().any(|&(u, _)| u == *k)) {
             return Err(ParseError::new(
                 at,
-                format!("`{{{sign}{highest}}}` is used but `{{{sign}{missing}}}` is not; every argument must be used, so number them without gaps"),
+                format!("`{{{sign}{highest}}}` is used but `{{{sign}{missing}}}` is not; every argument must be used, so number them without gaps (or cover the gap with a slice)"),
             ));
         }
     }
@@ -827,12 +828,15 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
     }
     let mut parser = Parser { tokens: tokens.into_iter().peekable(), end: src.len() };
     let (mut head, tail) = parser.list()?;
-    check_gaps(&refs)?;
 
     // Collect the distinct references, applying the implicit-`{@}` rule above.
     let mut shape = Shape::default();
     for &(r, _) in &refs {
         shape.add(r);
+    }
+    // With slices, a gap may be covered; `layout` decides that per count.
+    if shape.slices.is_empty() {
+        check_gaps(&refs)?;
     }
     let implicit_rest = refs.is_empty() && tail.is_empty() && head.stages.len() == 1;
     if implicit_rest {
@@ -917,6 +921,13 @@ enum Problem {
     /// than text, so the whole-template error can describe them without
     /// naming a particular count (see `describe_unused`).
     Unused(Vec<usize>),
+    /// A gap in `{N}` / `{-N}` numbering that no slice covers.
+    Gap {
+        /// The highest-numbered reference in that direction.
+        used: Index,
+        /// The first number below it that nothing refers to.
+        missing: Index,
+    },
     /// Anything else, already phrased.
     Other(String),
 }
@@ -951,6 +962,29 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     for &slice in &shape.slices {
         let range = slice_range(slice, count).ok_or_else(|| Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1))))?;
         slices.insert(slice, range);
+    }
+    // Gaps in {N} / {-N} numbering must be covered by a slice. {@} does not
+    // count: it takes whatever no {N} uses, so letting it fill a gap would
+    // silently accept the typo `cp {1} {3} {@}` (with {2} going to {@}).
+    for back in [false, true] {
+        let numbers: Vec<usize> = shape
+            .indexes
+            .iter()
+            .filter_map(|&i| match i {
+                Index::Front(k) if !back => Some(k),
+                Index::Back(k) if back => Some(k),
+                _ => None,
+            })
+            .collect();
+        let Some(&highest) = numbers.iter().max() else { continue };
+        let make = |k| if back { Index::Back(k) } else { Index::Front(k) };
+        for missing in (1..highest).filter(|k| !numbers.contains(k)).map(make) {
+            // In range: the higher index was placed above, so this one fits.
+            let Some(position) = missing.position(count) else { continue };
+            if !slices.values().any(|&(lo, hi)| lo <= position && position <= hi) {
+                return Err(Problem::Gap { used: make(highest), missing });
+            }
+        }
     }
     // Without {@}, every argument must be claimed by an index or covered by a
     // slice; an argument that nothing uses is almost always a mistake (the
@@ -1041,6 +1075,7 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
         // must not appear in the message.
         let reason = match check_count(shape, plenty, plenty) {
             Err(Problem::Unused(positions)) => describe_unused(shape, &positions, plenty),
+            Err(Problem::Gap { used, missing }) => format!("{used} is used but {missing} is not, and no slice covers that argument"),
             Err(Problem::Other(text)) => text,
             // Unreachable: `from` would be set.
             Ok(_) => String::new(),
@@ -1405,6 +1440,23 @@ mod tests {
     fn empty_command_from_rest() {
         // A command that is only {@} needs at least one argument to run.
         assert_eq!(parse("{@}").unwrap().expand("t", &[]), Err(ExpandError::EmptyCommand));
+    }
+
+    #[test]
+    fn slices_fill_gaps_in_numbering() {
+        // {2} is covered by the slice, so {1} {3} has no gap here.
+        assert_eq!(argv("echo a {2..} {1} {3}", &["x", "y", "z", "w"]), os(&["echo", "a", "y", "z", "w", "x", "z"]));
+        assert_eq!(arity("echo a {2..} {1} {3}"), "at least 3 arguments");
+        // The same from the back: {..-1} covers {-2}.
+        assert_eq!(argv("echo {-1} {-3} {..-1}", &["a", "b", "c"]), os(&["echo", "c", "a", "a", "b"]));
+        // Still a gap if the slice doesn't reach it, now a whole-template error.
+        let err = parse("echo {1} {3} {5..}").unwrap_err();
+        assert!(err.message.ends_with(": {3} is used but {2} is not, and no slice covers that argument"), "{}", err.message);
+        // {@} never fills a gap: `cp {1} {3} {@}` stays a typo.
+        assert!(parse("cp {1} {3} {@}").is_err());
+        // With the gap covered, the last argument is still unused here.
+        let err = parse("echo a {2..-1} {1} {3}").unwrap_err();
+        assert!(err.message.contains("the last argument would never be used"), "{}", err.message);
     }
 
     #[test]

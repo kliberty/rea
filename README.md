@@ -125,8 +125,9 @@ up stdin, so the template's own commands then see stdin at end of file.
   different ones may not.
 - Slices claim nothing, so they may overlap the other references on purpose
   (`{1} {1..}`), and they are never empty: `rm {2..}` needs a second argument.
-- Every argument must be used, and `{N}` / `{-N}` numbering has no gaps
-  (`{2}` needs `{1}`). The count is exact unless `{@}`, `{@+}` or a slice is
+- Every argument must be used, and `{N}` / `{-N}` numbering has no gaps:
+  `{3}` needs `{2}`, or a slice that covers it (`{1} {2..} {3}` is fine).
+  `{@}` doesn't fill gaps, so the typo `cp {1} {3} {@}` is still caught. The count is exact unless `{@}`, `{@+}` or a slice is
   used, so `flif270 *.flif` is an error, not "process the first file".
   A count at which a slice would overlap the other references differently
   than with more arguments is rejected too: `{1..4} {-1}` takes exactly 4,

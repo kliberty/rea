@@ -54,9 +54,10 @@ Template syntax:
   A word containing {@}, {@+} or a slice is repeated once per argument:
   -I{@} gives -Ia -Ib, and nothing at all when {@} is empty.
 
-  Every argument must be used, and numbering has no gaps ({2} needs {1}).
-  The count is exact unless {@}, {@+} or a slice is used. A single command
-  with no references gets {@} appended, like a shell alias.
+  Every argument must be used, and numbering has no gaps: {3} needs {2},
+  or a slice covering it ({@} doesn't count). The count is exact unless {@},
+  {@+} or a slice is used. A single command with no references gets {@}
+  appended, like a shell alias.
 
   $, backticks, globs, redirection, ( ) and a lone & are errors rather than
   passed through; quote or escape them to pass them literally.
