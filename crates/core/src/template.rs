@@ -911,6 +911,16 @@ fn describe_positions(positions: &[usize]) -> String {
     }
 }
 
+/// Why one argument count doesn't work.
+enum Problem {
+    /// These positions would be used by nothing. Kept as positions rather
+    /// than text, so the whole-template error can describe them without
+    /// naming a particular count (see `describe_unused`).
+    Unused(Vec<usize>),
+    /// Anything else, already phrased.
+    Other(String),
+}
+
 /// Lay out the references for one argument count, checking the rules that
 /// don't involve comparing counts: indexes in range and distinct, `{@+}` and
 /// slices non-empty, every argument used.
@@ -918,15 +928,15 @@ fn describe_positions(positions: &[usize]) -> String {
 /// :param shape: the template's references
 /// :param count: number of arguments
 /// :return: the layout, or why this count doesn't work
-fn layout(shape: &Shape, count: usize) -> Result<Layout, String> {
+fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // Each position may belong to at most one index ({N}/{-N}); {@} takes
     // whatever is left.
     let mut owner: Vec<Option<Index>> = vec![None; count + 1];
     let mut index = HashMap::new();
     for &i in &shape.indexes {
-        let position = i.position(count).ok_or_else(|| format!("{i} needs at least {} arguments", i.magnitude()))?;
+        let position = i.position(count).ok_or_else(|| Problem::Other(format!("{i} needs at least {} arguments", i.magnitude())))?;
         if let Some(other) = owner[position] {
-            return Err(format!("{other} and {i} would both be argument {position}"));
+            return Err(Problem::Other(format!("{other} and {i} would both be argument {position}")));
         }
         owner[position] = Some(i);
         index.insert(i, position);
@@ -934,12 +944,12 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, String> {
     // {@}: every position no index owns.
     let rest: Vec<usize> = if shape.rest.is_some() { (1..=count).filter(|&p| owner[p].is_none()).collect() } else { Vec::new() };
     if shape.rest == Some(true) && rest.is_empty() {
-        return Err("{@+} would be empty".into());
+        return Err(Problem::Other("{@+} would be empty".into()));
     }
     // Slices must be non-empty; that is what makes {2..} safe for `rm`.
     let mut slices = HashMap::new();
     for &slice in &shape.slices {
-        let range = slice_range(slice, count).ok_or_else(|| format!("{} would be empty", Multi::Slice(slice.0, slice.1)))?;
+        let range = slice_range(slice, count).ok_or_else(|| Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1))))?;
         slices.insert(slice, range);
     }
     // Without {@}, every argument must be claimed by an index or covered by a
@@ -949,7 +959,7 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, String> {
         let unused: Vec<usize> =
             (1..=count).filter(|&p| owner[p].is_none() && !slices.values().any(|&(lo, hi)| lo <= p && p <= hi)).collect();
         if !unused.is_empty() {
-            return Err(format!("{} would be unused", describe_positions(&unused)));
+            return Err(Problem::Unused(unused));
         }
     }
     Ok(Layout { index, rest, slices })
@@ -992,12 +1002,12 @@ fn relations(shape: &Shape, count: usize) -> Vec<bool> {
 /// :param count: number of arguments
 /// :param plenty: a count at which every relation has settled (see `compute_arity`)
 /// :return: the layout, or why this count doesn't work
-fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, String> {
+fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Problem> {
     let layout = layout(shape, count)?;
     // E.g. in `{1..4} {-1}`, with 3 arguments the slice would take the last
     // one too, which nobody writing that template intends.
     if relations(shape, count) != relations(shape, plenty) {
-        return Err(format!("with {count} arguments, a slice would share different arguments with the other references than with more"));
+        return Err(Problem::Other(format!("with {count} arguments, a slice would share different arguments with the other references than with more")));
     }
     Ok(layout)
 }
@@ -1026,11 +1036,56 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
         from = Some(last);
     }
     if counts.is_empty() && from.is_none() {
-        // The reason at `plenty` is the most representative one to show.
-        let reason = check_count(shape, plenty, plenty).err().unwrap_or_default();
-        return Err(ParseError::whole(format!("no number of arguments works with this template (with {plenty}: {reason})")));
+        // The problem at `plenty` is the one every larger count shares, so it
+        // is the one to explain; but `plenty` itself is an internal choice and
+        // must not appear in the message.
+        let reason = match check_count(shape, plenty, plenty) {
+            Err(Problem::Unused(positions)) => describe_unused(shape, &positions, plenty),
+            Err(Problem::Other(text)) => text,
+            // Unreachable: `from` would be set.
+            Ok(_) => String::new(),
+        };
+        return Err(ParseError::whole(format!("no number of arguments works with this template: {reason}")));
     }
     Ok(Arity { counts, from })
+}
+
+/// Describe arguments that would never be used, without naming a count.
+///
+/// At `plenty` (2K+1), positions 1..=K are only reachable as `{N}`, the last K
+/// only as `{-N}`, and the one in between stands for every middle argument;
+/// so each unused position has a count-independent name.
+///
+/// :param shape: the template's references
+/// :param positions: unused positions at `plenty`, ascending
+/// :param plenty: the count they were found at
+/// :return: e.g. "argument 1 and the last argument would never be used"
+fn describe_unused(shape: &Shape, positions: &[usize], plenty: usize) -> String {
+    let k = shape.max_magnitude();
+    let front: Vec<usize> = positions.iter().copied().filter(|&p| p <= k).collect();
+    let back: Vec<usize> = positions.iter().filter(|&&p| p > plenty - k).map(|&p| plenty + 1 - p).collect();
+    let middle = positions.iter().any(|&p| p > k && p <= plenty - k);
+    // Front first, then the middle, then the back, in argument order.
+    let mut parts = Vec::new();
+    if !front.is_empty() {
+        parts.push(describe_positions(&front));
+    }
+    if middle {
+        parts.push("the arguments in between".to_owned());
+    }
+    parts.extend(back.iter().map(|&j| if j == 1 { "the last argument".to_owned() } else { format!("argument -{j}") }));
+    let (last, init) = parts.split_last().expect("there is an unused position");
+    let list = if init.is_empty() { last.clone() } else { format!("{} and {last}", init.join(", ")) };
+    // The usual cause of an unused tail: a slice ending at {-N}, read as if
+    // it included its end. Show the spelling that runs through the last.
+    let hint = shape
+        .slices
+        .iter()
+        .find(|(_, end)| matches!(end, Some(Index::Back(_))))
+        .filter(|_| !back.is_empty())
+        .map(|&(start, _)| format!("; a slice stops before its end, so {} runs through the last argument", Multi::Slice(start, None)))
+        .unwrap_or_default();
+    format!("{list} would never be used{hint}")
 }
 
 /// One process's argv after expansion.
@@ -1357,7 +1412,15 @@ mod tests {
         // Arguments 1 and 2 are never used, whatever the count.
         let err = parse("cmd {3..}").unwrap_err();
         assert_eq!(err.offset, None);
-        assert!(err.message.contains("arguments 1 and 2 would be unused"), "{}", err.message);
+        assert!(err.message.ends_with(": arguments 1 and 2 would never be used"), "{}", err.message);
+        // A slice ending at {-1} leaves the last argument out; the message
+        // names it without an internal count, and gives the right spelling.
+        let err = parse("echo a {2..-1}").unwrap_err();
+        assert_eq!(
+            err.message,
+            "no number of arguments works with this template: argument 1 and the last argument would never be used; \
+             a slice stops before its end, so {2..} runs through the last argument"
+        );
         // {1} and {-1} are distinct arguments, but nothing uses the middle.
         assert_eq!(arity("cmd {1} {-1}"), "exactly 2 arguments");
     }
