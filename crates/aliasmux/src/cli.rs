@@ -36,7 +36,8 @@ Template syntax:
 
   {1} {2} ...     arguments counted from the front
   {-1} {-2} ...   arguments counted from the back: {-1} is the last
-  {@}             every argument no {N} or {-N} uses, zero or more
+  {@}             every argument nothing else uses (no {N}, {-N} or
+                  slice), zero or more
   {@+}            the same, but at least one is required
   {A..B}          a slice: from argument A up to but not including B, each
                   counted like {N} or {-N}. Either end may be left out:

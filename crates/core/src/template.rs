@@ -15,12 +15,13 @@
 //!
 //! * `{N}` and `{-N}`: one argument, counted from the front (from 1) or from
 //!   the back (`{-1}` is the last)
-//! * `{@}`: every argument that no `{N}` or `{-N}` uses, zero or more;
+//! * `{@}`: every argument nothing else uses (no `{N}`, `{-N}` or slice),
+//!   zero or more;
 //!   `{@+}` is the same but requires at least one
 //! * `{A..B}`: a slice, from argument A up to but not including argument B,
 //!   each end counted like `{N}` / `{-N}` and either one optional: `{2..}` is
-//!   the 2nd onward, `{..-1}` all but the last. Slices claim nothing (they may
-//!   overlap other references) and are never empty.
+//!   the 2nd onward, `{..-1}` all but the last. Slices may overlap `{N}`, `{-N}`
+//!   and each other, `{@}` leaves out what they pass, and they are never empty.
 //! * `{0}`: the alias name
 //!
 //! A one-argument reference always yields exactly one argv entry. A word that
@@ -97,7 +98,7 @@ impl fmt::Display for Index {
 /// A reference that stands for several arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Multi {
-    /// `{@}` or `{@+}`: the arguments no `{N}`/`{-N}` uses.
+    /// `{@}` or `{@+}`: the arguments no `{N}`, `{-N}` or slice uses.
     Rest {
         /// True for `{@+}`.
         at_least_one: bool,
@@ -494,7 +495,7 @@ fn parse_ref_body(body: &str) -> Result<Ref, String> {
         "0" => Ok(Ref::Name),
         // An open-ended slice in both directions has two spellings already
         // ({1..} and {@} when nothing else is used); a third adds nothing.
-        ".." => Err("`{..}` is not a slice; write `{1..}` for every argument, or `{@}` for those no {N} or {-N} uses".into()),
+        ".." => Err("`{..}` is not a slice; write `{1..}` for every argument, or `{@}` for those nothing else uses".into()),
         _ => match body.split_once("..") {
             Some((start, end)) => parse_slice(start, end, body),
             None => parse_index(body, body).map(Ref::Arg),
@@ -928,7 +929,7 @@ enum Problem {
 /// :return: the layout, or why this count doesn't work
 fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // Each position may belong to at most one index ({N}/{-N}); {@} takes
-    // whatever is left.
+    // whatever neither an index nor a slice uses.
     let mut owner: Vec<Option<Index>> = vec![None; count + 1];
     let mut index = HashMap::new();
     for &i in &shape.indexes {
@@ -939,20 +940,26 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
         owner[position] = Some(i);
         index.insert(i, position);
     }
-    // {@}: every position no index owns.
-    let rest: Vec<usize> = if shape.rest.is_some() { (1..=count).filter(|&p| owner[p].is_none()).collect() } else { Vec::new() };
-    if shape.rest == Some(true) && rest.is_empty() {
-        return Err(Problem::Other("{@+} would be empty".into()));
-    }
     // Slices must be non-empty; that is what makes {2..} safe for `rm`.
     let mut slices = HashMap::new();
     for &slice in &shape.slices {
         let range = slice_range(slice, count).ok_or_else(|| Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1))))?;
         slices.insert(slice, range);
     }
+    let in_a_slice = |p: usize| slices.values().any(|&(lo, hi): &(usize, usize)| lo <= p && p <= hi);
+    // {@}: every position nothing else uses, neither an index nor a slice.
+    // Constraint on change: {@} used to exclude only indexes, so in
+    // `{1} {2..-2} {@}` it repeated what the slice had already passed; "the
+    // rest" means what nothing else mentions, and duplicating on purpose is
+    // still possible by writing the slice twice.
+    let rest: Vec<usize> =
+        if shape.rest.is_some() { (1..=count).filter(|&p| owner[p].is_none() && !in_a_slice(p)).collect() } else { Vec::new() };
+    if shape.rest == Some(true) && rest.is_empty() {
+        return Err(Problem::Other("{@+} would be empty".into()));
+    }
     // Gaps in {N} / {-N} numbering must be covered by a slice. {@} does not
-    // count: it takes whatever no {N} uses, so letting it fill a gap would
-    // silently accept the typo `cp {1} {3} {@}` (with {2} going to {@}).
+    // count: it takes whatever nothing else uses, so letting it fill a gap
+    // would silently accept the typo `cp {1} {3} {@}` (with {2} going to {@}).
     for back in [false, true] {
         let numbers: Vec<usize> = shape
             .indexes
@@ -968,7 +975,7 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
         for missing in (1..highest).filter(|k| !numbers.contains(k)).map(make) {
             // In range: the higher index was placed above, so this one fits.
             let Some(position) = missing.position(count) else { continue };
-            if !slices.values().any(|&(lo, hi)| lo <= position && position <= hi) {
+            if !in_a_slice(position) {
                 return Err(Problem::Gap { used: make(highest), missing });
             }
         }
@@ -1330,6 +1337,18 @@ mod tests {
     }
 
     #[test]
+    fn rest_is_what_nothing_else_uses() {
+        // Arguments a slice passes aren't repeated by {@}.
+        let src = "echo a {2..-2} {1} remaining {@}";
+        assert_eq!(argv(src, &["1", "2", "3", "4", "5"]), os(&["echo", "a", "2", "3", "1", "remaining", "4", "5"]));
+        // Next to slices, {@} is the "and any others" that may be empty.
+        assert_eq!(argv("cmd {1} {2..3} {@}", &["a", "b"]), os(&["cmd", "a", "b"]));
+        assert_eq!(argv("cmd {..-1} -- {@}", &["a", "b", "c"]), os(&["cmd", "a", "b", "--", "c"]));
+        // A {@+} that a slice always leaves empty is refused up front.
+        assert!(parse("cmd {1..} {@+}").unwrap_err().message.contains("{@+} would be empty"));
+    }
+
+    #[test]
     fn rest_is_what_indexes_leave() {
         // {@} excludes arguments that {N}/{-N} use, so nothing is passed twice.
         assert_eq!(argv("cmd {1} -- {@}", &["a", "b", "c"]), os(&["cmd", "a", "--", "b", "c"]));
@@ -1351,7 +1370,7 @@ mod tests {
         // {2..} needs at least one argument to stand for: `rm {1} {2..}` with
         // one argument is an error, not `rm a`.
         assert_eq!(arity("cmd {1} {2..}"), "at least 2 arguments");
-        // Slices claim nothing, so they may overlap indexes on purpose.
+        // Slices may overlap indexes on purpose.
         assert_eq!(argv("echo {1} {1..}", &["a", "b"]), os(&["echo", "a", "a", "b"]));
     }
 

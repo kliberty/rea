@@ -106,7 +106,7 @@ up stdin, so the template's own commands then see stdin at end of file.
 |---|---|
 | `{1}`, `{2}`, ... | arguments counted from the front; can be glued to text: `{1}.mkv` |
 | `{-1}`, `{-2}`, ... | arguments counted from the back: `{-1}` is the last |
-| `{@}` | every argument no `{N}` or `{-N}` uses, zero or more |
+| `{@}` | every argument nothing else uses (no `{N}`, `{-N}` or slice), zero or more |
 | `{@+}` | the same, but at least one is required |
 | `{A..B}` | a slice: from argument A up to but **not including** B, counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-1}` all but the last |
 | `{0}` | the alias name |
@@ -123,8 +123,10 @@ up stdin, so the template's own commands then see stdin at end of file.
   `rm -rf /{@}` with no arguments never becomes `rm -rf /`). The same
   reference may appear twice in a word (`{@}={@}` gives `a=a b=b`), but two
   different ones may not.
-- Slices claim nothing, so they may overlap the other references on purpose
-  (`{1} {1..}`), and they are never empty: `rm {2..}` needs a second argument.
+- Slices may overlap `{N}`, `{-N}` and each other on purpose (`{1} {1..}`),
+  and they are never empty: `rm {2..}` needs a second argument. `{@}` never
+  repeats what a slice already passed: in `{1} {2..-2} {@}` with five
+  arguments, `{@}` is the 4th and 5th.
 - Every argument must be used, and `{N}` / `{-N}` numbering has no gaps:
   `{3}` needs `{2}`, or a slice that covers it (`{1} {2..} {3}` is fine).
   `{@}` doesn't fill gaps, so the typo `cp {1} {3} {@}` is still caught. The count is exact unless `{@}`, `{@+}` or a slice is
