@@ -52,8 +52,10 @@ Template syntax:
   {1:/.}          basename, no extension   dir/photo.jpg -> photo
   {1:F} {1:D}     must be an existing file / directory
   {1:E} {1:N}     must exist / must not exist yet
-  A check and a modifier combine, check first: {1:F/.}. Modifiers only edit
-  the text. Checks look at the file system, for every argument, before
+  {1:F/.}         both, check first: dir/photo.jpg must be a file -> photo
+  {1:D//}         dir/sub must be a directory -> dir
+  The check is on the argument itself, before the modifier. Modifiers only
+  edit the text. Checks look at the file system, for every argument, before
   anything runs, so a file an earlier step creates doesn't count yet.
 
   a | b           pipe
@@ -79,7 +81,8 @@ Examples:
   aliasmux new cpto 'cp -t {-1} {@+}'
   aliasmux new incl 'gcc -I{@} -c {-1}'
   aliasmux new relink 'rm -f {@} && symlink {-1} {@}'
-  aliasmux new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'";
+  aliasmux new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'
+  aliasmux new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'";
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///

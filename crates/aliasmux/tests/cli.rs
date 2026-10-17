@@ -477,6 +477,8 @@ fn template_syntax_is_in_the_long_help() {
     for args in [&["--help"][..], &["new", "--help"], &["eval", "--help"]] {
         let help = stdout(&bin().args(args).output().unwrap());
         assert!(help.contains("{A..B}") && help.contains("{@+}") && help.contains("up to but not including"), "{args:?}: {help}");
+        // Checks and modifiers, including the two combined.
+        assert!(help.contains("{1:/.}") && help.contains("{1:F/.}") && help.contains("{1:D//}"), "{args:?}: {help}");
     }
     assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
 }
