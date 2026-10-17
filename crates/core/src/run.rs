@@ -55,7 +55,11 @@ impl Outcome {
 /// :param err: the spawn/exec error
 /// :return: 127 for "not found", 126 for anything else (permissions, bad format)
 fn spawn_failure_code(err: &io::Error) -> i32 {
-    if err.kind() == io::ErrorKind::NotFound { 127 } else { 126 }
+    if err.kind() == io::ErrorKind::NotFound {
+        127
+    } else {
+        126
+    }
 }
 
 /// Print a spawn/exec failure to stderr.
@@ -191,7 +195,9 @@ fn run_pipeline(alias: &str, stages: &[Argv]) -> Outcome {
         .map(|stage| match stage {
             // `wait` can only fail with ECHILD, which means the child was reaped
             // elsewhere; nothing in this process does that, so it's a generic failure.
-            Stage::Running(mut child) => child.wait().map_or(Outcome::Exited(1), Outcome::from_status),
+            Stage::Running(mut child) => child
+                .wait()
+                .map_or(Outcome::Exited(1), Outcome::from_status),
             Stage::Failed(outcome) => outcome,
         })
         .collect();
@@ -305,7 +311,10 @@ pub fn exit_with(outcome: Outcome) -> ! {
             // loop on Ctrl-C if the child died *by SIGINT*, not if it exited 130.
             // Arbitrary choice: limited to signals that don't dump core, so the
             // supervisor (which didn't crash) never leaves a core file behind.
-            if matches!(signal, libc::SIGINT | libc::SIGTERM | libc::SIGHUP | libc::SIGPIPE) {
+            if matches!(
+                signal,
+                libc::SIGINT | libc::SIGTERM | libc::SIGHUP | libc::SIGPIPE
+            ) {
                 // SAFETY: plain libc calls; restoring the default disposition
                 // first makes `raise` terminate us instead of hitting our
                 // no-op handler (SIGINT) or std's ignore (SIGPIPE).
@@ -329,9 +338,18 @@ mod tests {
         use Outcome::{Exited, Signaled};
         // All success, rightmost failure wins, and SIGPIPE upstream is benign.
         assert_eq!(pipeline_outcome(&[Exited(0), Exited(0)]), Exited(0));
-        assert_eq!(pipeline_outcome(&[Exited(2), Exited(3), Exited(0)]), Exited(3));
-        assert_eq!(pipeline_outcome(&[Signaled(libc::SIGPIPE), Exited(0)]), Exited(0));
+        assert_eq!(
+            pipeline_outcome(&[Exited(2), Exited(3), Exited(0)]),
+            Exited(3)
+        );
+        assert_eq!(
+            pipeline_outcome(&[Signaled(libc::SIGPIPE), Exited(0)]),
+            Exited(0)
+        );
         // ...but SIGPIPE in the last stage is our own output failing: report it.
-        assert_eq!(pipeline_outcome(&[Exited(0), Signaled(libc::SIGPIPE)]), Signaled(libc::SIGPIPE));
+        assert_eq!(
+            pipeline_outcome(&[Exited(0), Signaled(libc::SIGPIPE)]),
+            Signaled(libc::SIGPIPE)
+        );
     }
 }

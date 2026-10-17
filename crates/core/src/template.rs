@@ -54,8 +54,8 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::iter::Peekable;
+use std::path::Path;
 use std::str::CharIndices;
 
 /// A one-argument position, as written in `{N}` or `{-N}`.
@@ -131,7 +131,9 @@ impl Multi {
     /// :return: a value equal for references to the same arguments
     fn set(self) -> Multi {
         match self {
-            Multi::Rest { .. } => Multi::Rest { at_least_one: false },
+            Multi::Rest { .. } => Multi::Rest {
+                at_least_one: false,
+            },
             slice => slice,
         }
     }
@@ -144,13 +146,19 @@ impl fmt::Display for Multi {
     /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Multi::Rest { at_least_one: false } => f.write_str("{@}"),
+            Multi::Rest {
+                at_least_one: false,
+            } => f.write_str("{@}"),
             Multi::Rest { at_least_one: true } => f.write_str("{@+}"),
             Multi::Slice(start, end) => {
                 let start = start.map(Index::as_written).unwrap_or_default();
                 let end = end.map(Index::as_written).unwrap_or_default();
                 // `{..}` is not valid syntax, so the all-arguments slice shows as `{1..}`.
-                if start.is_empty() && end.is_empty() { f.write_str("{1..}") } else { write!(f, "{{{start}..{end}}}") }
+                if start.is_empty() && end.is_empty() {
+                    f.write_str("{1..}")
+                } else {
+                    write!(f, "{{{start}..{end}}}")
+                }
             }
         }
     }
@@ -204,7 +212,11 @@ impl Check {
         let path = Path::new(value);
         // `metadata` follows symlinks, as `test -f` does; `N` looks at the
         // link itself instead (see below).
-        let stat = if self == Check::Absent { fs::symlink_metadata(path) } else { fs::metadata(path) };
+        let stat = if self == Check::Absent {
+            fs::symlink_metadata(path)
+        } else {
+            fs::metadata(path)
+        };
         match (self, stat) {
             // Deviation from `test -f`: anything but a directory passes, so
             // /dev/null, /dev/stdin, FIFOs and bash's `<(...)` (/dev/fd/63, a
@@ -277,7 +289,9 @@ impl Modifier {
                 Some(parent) => parent.as_os_str().to_os_string(),
                 None => value.to_os_string(),
             },
-            Modifier::NoExtension if path.extension().is_some() => path.with_extension("").into_os_string(),
+            Modifier::NoExtension if path.extension().is_some() => {
+                path.with_extension("").into_os_string()
+            }
             Modifier::NoExtension => value.to_os_string(),
             Modifier::Stem => path.file_stem().unwrap_or(value).to_os_string(),
         }
@@ -301,7 +315,11 @@ impl Format {
         if self == Format::default() {
             return String::new();
         }
-        let check = self.check.map(Check::letter).map(String::from).unwrap_or_default();
+        let check = self
+            .check
+            .map(Check::letter)
+            .map(String::from)
+            .unwrap_or_default();
         format!(":{check}{}", self.modifier.map_or("", Modifier::as_written))
     }
 
@@ -315,13 +333,24 @@ impl Format {
     /// :param reference: the reference as written, for error messages
     /// :param failed: where failed checks are recorded
     /// :return: the text to substitute
-    fn render(self, value: &OsStr, reference: impl Fn() -> String, failed: &mut Failures) -> OsString {
+    fn render(
+        self,
+        value: &OsStr,
+        reference: impl Fn() -> String,
+        failed: &mut Failures,
+    ) -> OsString {
         if let Some(check) = self.check
             && let Err(found) = check.run(value)
         {
-            failed.record(ExpandError::CheckFailed { reference: reference(), wants: check.wants(), value: value.to_os_string(), found });
+            failed.record(ExpandError::CheckFailed {
+                reference: reference(),
+                wants: check.wants(),
+                value: value.to_os_string(),
+                found,
+            });
         }
-        self.modifier.map_or_else(|| value.to_os_string(), |m| m.apply(value))
+        self.modifier
+            .map_or_else(|| value.to_os_string(), |m| m.apply(value))
     }
 }
 
@@ -332,7 +361,11 @@ impl Format {
 /// :return: the reference with the format inside the braces
 fn written(plain: &str, format: Format) -> String {
     // `plain` always ends in `}`; the format goes just before it.
-    format!("{}{}}}", plain.strip_suffix('}').unwrap_or(plain), format.suffix())
+    format!(
+        "{}{}}}",
+        plain.strip_suffix('}').unwrap_or(plain),
+        format.suffix()
+    )
 }
 
 /// One fragment of a word.
@@ -412,8 +445,12 @@ impl Shape {
             Ref::Arg(index, _) if !self.indexes.contains(&index) => self.indexes.push(index),
             // `{@}` and `{@+}` are the same arguments; one `+` anywhere makes
             // at least one required, which is the safe reading.
-            Ref::Multi(Multi::Rest { at_least_one }, _) => self.rest = Some(self.rest.unwrap_or(false) || at_least_one),
-            Ref::Multi(Multi::Slice(start, end), _) if !self.slices.contains(&(start, end)) => self.slices.push((start, end)),
+            Ref::Multi(Multi::Rest { at_least_one }, _) => {
+                self.rest = Some(self.rest.unwrap_or(false) || at_least_one)
+            }
+            Ref::Multi(Multi::Slice(start, end), _) if !self.slices.contains(&(start, end)) => {
+                self.slices.push((start, end))
+            }
             _ => {}
         }
     }
@@ -422,8 +459,18 @@ impl Shape {
     ///
     /// :return: the magnitude, 0 if there are none
     fn max_magnitude(&self) -> usize {
-        let ends = self.slices.iter().flat_map(|(start, end)| [*start, *end]).flatten();
-        self.indexes.iter().copied().chain(ends).map(Index::magnitude).max().unwrap_or(0)
+        let ends = self
+            .slices
+            .iter()
+            .flat_map(|(start, end)| [*start, *end])
+            .flatten();
+        self.indexes
+            .iter()
+            .copied()
+            .chain(ends)
+            .map(Index::magnitude)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -470,14 +517,22 @@ impl fmt::Display for Arity {
             while let Some(next) = counts.next_if(|&c| c == end + 1) {
                 end = next;
             }
-            parts.push(if start == end { start.to_string() } else { format!("{start} to {end}") });
+            parts.push(if start == end {
+                start.to_string()
+            } else {
+                format!("{start} to {end}")
+            });
         }
         if let Some(from) = self.from {
             parts.push(format!("at least {from}"));
         }
         // Join as "a, b or c".
         let (last, init) = parts.split_last().expect("an arity accepts some count");
-        let list = if init.is_empty() { last.clone() } else { format!("{} or {last}", init.join(", ")) };
+        let list = if init.is_empty() {
+            last.clone()
+        } else {
+            format!("{} or {last}", init.join(", "))
+        };
         write!(f, "{list} arguments")
     }
 }
@@ -516,7 +571,10 @@ impl ParseError {
     /// :param message: explanation for the user
     /// :return: the error
     fn new(offset: usize, message: impl Into<String>) -> Self {
-        ParseError { offset: Some(offset), message: message.into() }
+        ParseError {
+            offset: Some(offset),
+            message: message.into(),
+        }
     }
 
     /// Construct an error about the template as a whole.
@@ -524,7 +582,10 @@ impl ParseError {
     /// :param message: explanation for the user
     /// :return: the error
     fn whole(message: impl Into<String>) -> Self {
-        ParseError { offset: None, message: message.into() }
+        ParseError {
+            offset: None,
+            message: message.into(),
+        }
     }
 
     /// Render the message with the source line and a caret under the error.
@@ -609,7 +670,14 @@ impl WordBuilder {
     /// :param start: byte offset of the word's first character
     /// :return: the builder
     fn new(start: usize) -> Self {
-        WordBuilder { start, pieces: Vec::new(), literal: String::new(), multi: None, check: None, after_check: false }
+        WordBuilder {
+            start,
+            pieces: Vec::new(),
+            literal: String::new(),
+            multi: None,
+            check: None,
+            after_check: false,
+        }
     }
 
     /// Append one literal character.
@@ -630,7 +698,13 @@ impl WordBuilder {
         // A word check must be last (see `finish`), so nothing may follow it,
         // not even another check.
         if let Some((check, at)) = self.check {
-            return Err(ParseError::new(at, format!("`{{:{}}}` must come at the very end of its word: it checks the whole word", check.letter())));
+            return Err(ParseError::new(
+                at,
+                format!(
+                    "`{{:{}}}` must come at the very end of its word: it checks the whole word",
+                    check.letter()
+                ),
+            ));
         }
         if let Ref::WordCheck(check) = r {
             self.flush();
@@ -647,7 +721,9 @@ impl WordBuilder {
             if let Some(existing) = self.multi.filter(|m| *m != multi.set()) {
                 return Err(ParseError::new(
                     offset,
-                    format!("a word can repeat one several-argument reference (like -I{{@}} or {{@}}={{@}}), but not combine two different ones ({existing} and {multi})"),
+                    format!(
+                        "a word can repeat one several-argument reference (like -I{{@}} or {{@}}={{@}}), but not combine two different ones ({existing} and {multi})"
+                    ),
                 ));
             }
             self.multi = Some(multi.set());
@@ -668,7 +744,8 @@ impl WordBuilder {
     fn flush(&mut self) {
         // Skip empty literals so `{1}{2}` doesn't gain a useless empty piece.
         if !self.literal.is_empty() {
-            self.pieces.push(Piece::Lit(std::mem::take(&mut self.literal)));
+            self.pieces
+                .push(Piece::Lit(std::mem::take(&mut self.literal)));
         }
     }
 
@@ -684,13 +761,26 @@ impl WordBuilder {
             // reference's own check is always about the argument, never the
             // word (`{1:F}` means the same everywhere it appears).
             if self.after_check {
-                return Err(ParseError::new(at, format!("`{{:{}}}` must come at the very end of its word: it checks the whole word", check.letter())));
+                return Err(ParseError::new(
+                    at,
+                    format!(
+                        "`{{:{}}}` must come at the very end of its word: it checks the whole word",
+                        check.letter()
+                    ),
+                ));
             }
             if self.pieces.is_empty() {
-                return Err(ParseError::new(at, "a word check needs a word to check; put it at the end of one, like out.txt{:N}"));
+                return Err(ParseError::new(
+                    at,
+                    "a word check needs a word to check; put it at the end of one, like out.txt{:N}",
+                ));
             }
         }
-        Ok(Word { pieces: self.pieces, check: self.check.map(|(check, _)| check), source: source.to_owned() })
+        Ok(Word {
+            pieces: self.pieces,
+            check: self.check.map(|(check, _)| check),
+            source: source.to_owned(),
+        })
     }
 }
 
@@ -706,15 +796,25 @@ fn parse_index(text: &str, body: &str) -> Result<Index, String> {
         None => (false, text),
     };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("unknown reference `{{{body}}}`; expected {{N}}, {{-N}}, {{A..B}}, {{@}}, {{@+}} or {{0}}"));
+        return Err(format!(
+            "unknown reference `{{{body}}}`; expected {{N}}, {{-N}}, {{A..B}}, {{@}}, {{@+}} or {{0}}"
+        ));
     }
     // Overflow is the only way the parse can fail after the digit check.
-    let n: usize = digits.parse().map_err(|_| format!("the number in `{{{body}}}` is too large"))?;
+    let n: usize = digits
+        .parse()
+        .map_err(|_| format!("the number in `{{{body}}}` is too large"))?;
     // 0 is only meaningful alone, as `{0}` (handled by the caller).
     if n == 0 {
-        return Err(format!("`{{{body}}}`: positions count from 1 at the front and from -1 at the back; 0 is not a position"));
+        return Err(format!(
+            "`{{{body}}}`: positions count from 1 at the front and from -1 at the back; 0 is not a position"
+        ));
     }
-    Ok(if back { Index::Back(n) } else { Index::Front(n) })
+    Ok(if back {
+        Index::Back(n)
+    } else {
+        Index::Front(n)
+    })
 }
 
 /// Interpret the text between braces.
@@ -723,7 +823,9 @@ fn parse_index(text: &str, body: &str) -> Result<Index, String> {
 /// :return: the reference, or a message explaining why it is invalid
 fn parse_ref_body(body: &str) -> Result<Ref, String> {
     // A format, if any, follows the first colon: `{1:F/.}`.
-    let Some((target, spec)) = body.split_once(':') else { return parse_target(body) };
+    let Some((target, spec)) = body.split_once(':') else {
+        return parse_target(body);
+    };
     // No reference before the colon: a check on the whole word.
     if target.is_empty() {
         return parse_word_check(spec, body);
@@ -734,7 +836,9 @@ fn parse_ref_body(body: &str) -> Result<Ref, String> {
         Ok(Ref::Multi(multi, _)) => Ok(Ref::Multi(multi, format)),
         // The alias name isn't a path the user supplied, so checking or
         // editing it would only ever be a mistake.
-        Ok(Ref::Name) => Err(format!("`{{{body}}}`: {{0}} is the alias name and takes no checks or modifiers")),
+        Ok(Ref::Name) => Err(format!(
+            "`{{{body}}}`: {{0}} is the alias name and takes no checks or modifiers"
+        )),
         // Unreachable: only parse_word_check makes these. Reported rather than
         // panicking, since this runs on user input.
         Ok(Ref::WordCheck(_)) => Err(format!("internal error parsing `{{{body}}}`")),
@@ -755,7 +859,9 @@ fn parse_word_check(spec: &str, body: &str) -> Result<Ref, String> {
         "N" => Ok(Ref::WordCheck(Check::Absent)),
         // A word check only tests the finished word, so it has nothing to
         // modify; modifiers belong on a reference.
-        _ => Err(format!("`{{{body}}}`: a check on a whole word is one of {{:F}}, {{:D}}, {{:E}} or {{:N}}; modifiers need a reference, like {{1:/.}}")),
+        _ => Err(format!(
+            "`{{{body}}}`: a check on a whole word is one of {{:F}}, {{:D}}, {{:E}} or {{:N}}; modifiers need a reference, like {{1:/.}}"
+        )),
     }
 }
 
@@ -767,7 +873,9 @@ fn parse_word_check(spec: &str, body: &str) -> Result<Ref, String> {
 fn parse_format(spec: &str, body: &str) -> Result<Format, String> {
     let expected = "expected a check (F, D, E or N), a modifier (/, //, . or /.), or a check then a modifier, like :F/.";
     if spec.is_empty() {
-        return Err(format!("`{{{body}}}` has nothing after the `:`; {expected}"));
+        return Err(format!(
+            "`{{{body}}}` has nothing after the `:`; {expected}"
+        ));
     }
     // At most one check, first. Arbitrary but simple: the four checks are
     // mutually exclusive or redundant (F implies E), so one is always enough.
@@ -784,7 +892,11 @@ fn parse_format(spec: &str, body: &str) -> Result<Format, String> {
         "//" => Some(Modifier::Parent),
         "." => Some(Modifier::NoExtension),
         "/." => Some(Modifier::Stem),
-        _ => return Err(format!("unknown format `:{spec}` in `{{{body}}}`; {expected}")),
+        _ => {
+            return Err(format!(
+                "unknown format `:{spec}` in `{{{body}}}`; {expected}"
+            ));
+        }
     };
     Ok(Format { check, modifier })
 }
@@ -817,8 +929,12 @@ fn parse_target(body: &str) -> Result<Ref, String> {
 /// :param body: the whole reference body, for error messages
 /// :return: the slice, or a message explaining why it is invalid
 fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
-    let start = (!start.is_empty()).then(|| parse_index(start, body)).transpose()?;
-    let end = (!end.is_empty()).then(|| parse_index(end, body)).transpose()?;
+    let start = (!start.is_empty())
+        .then(|| parse_index(start, body))
+        .transpose()?;
+    let end = (!end.is_empty())
+        .then(|| parse_index(end, body))
+        .transpose()?;
     // Store a `{1..` start as None, so `{1..3}` and `{..3}` are equal (which
     // matters when one word repeats the same slice twice).
     let start = start.filter(|&s| s != Index::Front(1));
@@ -833,7 +949,9 @@ fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
         _ => false,
     };
     if always_empty {
-        return Err(format!("`{{{body}}}` is always empty; a slice stops before its end, so {{2..4}} is the 2nd and 3rd"));
+        return Err(format!(
+            "`{{{body}}}` is always empty; a slice stops before its end, so {{2..4}} is the 2nd and 3rd"
+        ));
     }
     Ok(Ref::Multi(Multi::Slice(start, end), Format::default()))
 }
@@ -851,10 +969,18 @@ fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, P
         match chars.next() {
             Some((_, '}')) => break,
             Some((_, c)) if c.is_whitespace() || c == '{' => {
-                return Err(ParseError::new(open, "unterminated `{`; write `\\{` for a literal brace"));
+                return Err(ParseError::new(
+                    open,
+                    "unterminated `{`; write `\\{` for a literal brace",
+                ));
             }
             Some((_, c)) => body.push(c),
-            None => return Err(ParseError::new(open, "unterminated `{`; write `\\{` for a literal brace")),
+            None => {
+                return Err(ParseError::new(
+                    open,
+                    "unterminated `{`; write `\\{` for a literal brace",
+                ));
+            }
         }
     }
     // Errors point at the opening brace, which is where the reader looks.
@@ -868,11 +994,19 @@ fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, P
 /// :param src: the template source
 /// :param end: byte offset just past the word
 /// :return: an error if the word is malformed
-fn end_word(word: &mut Option<WordBuilder>, tokens: &mut Vec<Token>, src: &str, end: usize) -> Result<(), ParseError> {
+fn end_word(
+    word: &mut Option<WordBuilder>,
+    tokens: &mut Vec<Token>,
+    src: &str,
+    end: usize,
+) -> Result<(), ParseError> {
     // Nothing to do between words, e.g. at repeated whitespace.
     if let Some(builder) = word.take() {
         let offset = builder.start;
-        tokens.push(Token { kind: TokenKind::Word(builder.finish(&src[offset..end])?), offset });
+        tokens.push(Token {
+            kind: TokenKind::Word(builder.finish(&src[offset..end])?),
+            offset,
+        });
     }
     Ok(())
 }
@@ -905,7 +1039,11 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             // `|` or `||`: operators also end the current word, so `a|b` works.
             '|' => {
                 end_word(&mut word, &mut tokens, src, offset)?;
-                let kind = if chars.next_if(|&(_, n)| n == '|').is_some() { TokenKind::Or } else { TokenKind::Pipe };
+                let kind = if chars.next_if(|&(_, n)| n == '|').is_some() {
+                    TokenKind::Or
+                } else {
+                    TokenKind::Pipe
+                };
                 tokens.push(Token { kind, offset });
             }
 
@@ -913,15 +1051,24 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             '&' => {
                 end_word(&mut word, &mut tokens, src, offset)?;
                 if chars.next_if(|&(_, n)| n == '&').is_none() {
-                    return Err(ParseError::new(offset, "a lone `&` is not supported (no background jobs); did you mean `&&`?"));
+                    return Err(ParseError::new(
+                        offset,
+                        "a lone `&` is not supported (no background jobs); did you mean `&&`?",
+                    ));
                 }
-                tokens.push(Token { kind: TokenKind::And, offset });
+                tokens.push(Token {
+                    kind: TokenKind::And,
+                    offset,
+                });
             }
 
             // `;` sequences unconditionally.
             ';' => {
                 end_word(&mut word, &mut tokens, src, offset)?;
-                tokens.push(Token { kind: TokenKind::Then, offset });
+                tokens.push(Token {
+                    kind: TokenKind::Then,
+                    offset,
+                });
             }
 
             // Single quotes: everything literal up to the next `'`, exactly as in sh.
@@ -946,12 +1093,16 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                         // here; elsewhere it stays literal, like sh, so regexes
                         // such as "\d+" survive unchanged.
                         Some((_, '\\')) => match chars.next() {
-                            Some((_, ch @ ('"' | '\\' | '{' | '}' | '$' | '`'))) => builder.push_char(ch),
+                            Some((_, ch @ ('"' | '\\' | '{' | '}' | '$' | '`'))) => {
+                                builder.push_char(ch)
+                            }
                             Some((_, ch)) => {
                                 builder.push_char('\\');
                                 builder.push_char(ch);
                             }
-                            None => return Err(ParseError::new(offset, "unterminated double quote")),
+                            None => {
+                                return Err(ParseError::new(offset, "unterminated double quote"));
+                            }
                         },
                         // References work inside double quotes, so "{1}.mkv" is fine.
                         Some((open, '{')) => {
@@ -968,7 +1119,9 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                         Some((at, ch @ ('$' | '`'))) => {
                             return Err(ParseError::new(
                                 at,
-                                format!("`{ch}` is not expanded here, even in double quotes; use `{{1}}`, `{{2}}`, ... for arguments, or write `\\{ch}` (or single quotes) to pass it literally"),
+                                format!(
+                                    "`{ch}` is not expanded here, even in double quotes; use `{{1}}`, `{{2}}`, ... for arguments, or write `\\{ch}` (or single quotes) to pass it literally"
+                                ),
                             ));
                         }
                         Some((_, ch)) => builder.push_char(ch),
@@ -979,14 +1132,22 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
 
             // Unquoted backslash makes the next character literal, whatever it is.
             '\\' => match chars.next() {
-                Some((_, ch)) => word.get_or_insert_with(|| WordBuilder::new(offset)).push_char(ch),
-                None => return Err(ParseError::new(offset, "trailing backslash escapes nothing")),
+                Some((_, ch)) => word
+                    .get_or_insert_with(|| WordBuilder::new(offset))
+                    .push_char(ch),
+                None => {
+                    return Err(ParseError::new(
+                        offset,
+                        "trailing backslash escapes nothing",
+                    ));
+                }
             },
 
             // An argument reference, possibly glued to text: {1}.rot.flif
             '{' => {
                 let r = read_ref(&mut chars, offset)?;
-                word.get_or_insert_with(|| WordBuilder::new(offset)).push_ref(r, offset)?;
+                word.get_or_insert_with(|| WordBuilder::new(offset))
+                    .push_ref(r, offset)?;
                 // Word checks use no argument; leave them out.
                 if !matches!(r, Ref::WordCheck(_)) {
                     refs.push((r, offset));
@@ -995,7 +1156,12 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
 
             // A stray `}` is almost always a typo like `{1}}`, so refuse it
             // rather than pass it through.
-            '}' => return Err(ParseError::new(offset, "unmatched `}`; write `\\}` for a literal brace")),
+            '}' => {
+                return Err(ParseError::new(
+                    offset,
+                    "unmatched `}`; write `\\}` for a literal brace",
+                ));
+            }
 
             // `$` gets its own hint, since it is what shell habits will produce.
             '$' => {
@@ -1009,12 +1175,16 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             '`' | '(' | ')' | '<' | '>' | '*' | '?' => {
                 return Err(ParseError::new(
                     offset,
-                    format!("`{c}` has no special meaning in alias templates (no subshells, redirection or globbing); quote or escape it to pass it literally"),
+                    format!(
+                        "`{c}` has no special meaning in alias templates (no subshells, redirection or globbing); quote or escape it to pass it literally"
+                    ),
                 ));
             }
 
             // Anything else is ordinary word text.
-            _ => word.get_or_insert_with(|| WordBuilder::new(offset)).push_char(c),
+            _ => word
+                .get_or_insert_with(|| WordBuilder::new(offset))
+                .push_char(c),
         }
     }
     // The last word has no trailing separator to end it.
@@ -1043,7 +1213,10 @@ impl Parser {
     fn command(&mut self) -> Result<Command, ParseError> {
         // Take words until an operator or end of input.
         let mut words = Vec::new();
-        while let Some(token) = self.tokens.next_if(|t| matches!(t.kind, TokenKind::Word(_))) {
+        while let Some(token) = self
+            .tokens
+            .next_if(|t| matches!(t.kind, TokenKind::Word(_)))
+        {
             // The guard above makes this the only possible variant.
             if let TokenKind::Word(w) = token.kind {
                 words.push(w);
@@ -1062,7 +1235,11 @@ impl Parser {
     fn pipeline(&mut self) -> Result<Pipeline, ParseError> {
         let mut stages = vec![self.command()?];
         // Each `|` must be followed by another command.
-        while self.tokens.next_if(|t| matches!(t.kind, TokenKind::Pipe)).is_some() {
+        while self
+            .tokens
+            .next_if(|t| matches!(t.kind, TokenKind::Pipe))
+            .is_some()
+        {
             stages.push(self.command()?);
         }
         Ok(Pipeline { stages })
@@ -1083,7 +1260,12 @@ impl Parser {
                 TokenKind::Then => Op::Then,
                 // Unreachable given the above; reported rather than panicking
                 // because the tool runs this code on user input.
-                _ => return Err(ParseError::new(token.offset, "internal error: unexpected token")),
+                _ => {
+                    return Err(ParseError::new(
+                        token.offset,
+                        "internal error: unexpected token",
+                    ));
+                }
             };
             // A trailing `;` is harmless (sh allows it), so accept it.
             if op == Op::Then && self.tokens.peek().is_none() {
@@ -1116,11 +1298,18 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
                 _ => None,
             })
             .collect();
-        let Some(&(highest, at)) = used.iter().max_by_key(|&&(k, offset)| (k, std::cmp::Reverse(offset))) else { continue };
+        let Some(&(highest, at)) = used
+            .iter()
+            .max_by_key(|&&(k, offset)| (k, std::cmp::Reverse(offset)))
+        else {
+            continue;
+        };
         if let Some(missing) = (1..highest).find(|k| !used.iter().any(|&(u, _)| u == *k)) {
             return Err(ParseError::new(
                 at,
-                format!("`{{{sign}{highest}}}` is used but `{{{sign}{missing}}}` is not; every argument must be used, so number them without gaps (or cover the gap with a slice)"),
+                format!(
+                    "`{{{sign}{highest}}}` is used but `{{{sign}{missing}}}` is not; every argument must be used, so number them without gaps (or cover the gap with a slice)"
+                ),
             ));
         }
     }
@@ -1136,7 +1325,9 @@ fn incompatible(a: Check, b: Check) -> Option<&'static str> {
     use Check::*;
     match (a, b) {
         (File, Dir) | (Dir, File) => Some("an argument can't be both a file and a directory"),
-        (Absent, File | Dir | Exists) | (File | Dir | Exists, Absent) => Some("an argument can't both exist and not exist"),
+        (Absent, File | Dir | Exists) | (File | Dir | Exists, Absent) => {
+            Some("an argument can't both exist and not exist")
+        }
         _ => None,
     }
 }
@@ -1156,13 +1347,30 @@ fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
     let mut seen: Vec<(Result<Index, Multi>, Check, String)> = Vec::new();
     for &(r, offset) in refs {
         let (target, check, text) = match r {
-            Ref::Arg(index, format @ Format { check: Some(check), .. }) => (Ok(index), check, written(&index.to_string(), format)),
-            Ref::Multi(multi, format @ Format { check: Some(check), .. }) => (Err(multi.set()), check, written(&multi.to_string(), format)),
+            Ref::Arg(
+                index,
+                format @ Format {
+                    check: Some(check), ..
+                },
+            ) => (Ok(index), check, written(&index.to_string(), format)),
+            Ref::Multi(
+                multi,
+                format @ Format {
+                    check: Some(check), ..
+                },
+            ) => (Err(multi.set()), check, written(&multi.to_string(), format)),
             _ => continue,
         };
-        let clash = seen.iter().find_map(|(t, c, first)| (*t == target).then(|| incompatible(*c, check).map(|why| (first, why))).flatten());
+        let clash = seen.iter().find_map(|(t, c, first)| {
+            (*t == target)
+                .then(|| incompatible(*c, check).map(|why| (first, why)))
+                .flatten()
+        });
         if let Some((first, why)) = clash {
-            return Err(ParseError::new(offset, format!("`{text}` contradicts `{first}`: {why}")));
+            return Err(ParseError::new(
+                offset,
+                format!("`{text}` contradicts `{first}`: {why}"),
+            ));
         }
         seen.push((target, check, text));
     }
@@ -1186,7 +1394,10 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
     if tokens.is_empty() {
         return Err(ParseError::new(0, "empty template"));
     }
-    let mut parser = Parser { tokens: tokens.into_iter().peekable(), end: src.len() };
+    let mut parser = Parser {
+        tokens: tokens.into_iter().peekable(),
+        end: src.len(),
+    };
     let (mut head, tail) = parser.list()?;
 
     // Collect the distinct references, applying the implicit-`{@}` rule above.
@@ -1201,12 +1412,24 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
     check_contradictions(&refs)?;
     let implicit_rest = refs.is_empty() && tail.is_empty() && head.stages.len() == 1;
     if implicit_rest {
-        let rest = Multi::Rest { at_least_one: false };
-        head.stages[0].words.push(Word { pieces: vec![Piece::Multi(rest, Format::default())], check: None, source: "{@}".into() });
+        let rest = Multi::Rest {
+            at_least_one: false,
+        };
+        head.stages[0].words.push(Word {
+            pieces: vec![Piece::Multi(rest, Format::default())],
+            check: None,
+            source: "{@}".into(),
+        });
         shape.add(Ref::Multi(rest, Format::default()));
     }
     let arity = compute_arity(&shape)?;
-    Ok(Template { head, tail, implicit_rest, shape, arity })
+    Ok(Template {
+        head,
+        tail,
+        implicit_rest,
+        shape,
+        arity,
+    })
 }
 
 /// Where each reference lands for one argument count.
@@ -1228,7 +1451,10 @@ impl Layout {
         match multi {
             Multi::Rest { .. } => self.rest.clone(),
             // Present for every slice of the template once the layout is valid.
-            Multi::Slice(start, end) => self.slices.get(&(start, end)).map_or_else(Vec::new, |&(lo, hi)| (lo..=hi).collect()),
+            Multi::Slice(start, end) => self
+                .slices
+                .get(&(start, end))
+                .map_or_else(Vec::new, |&(lo, hi)| (lo..=hi).collect()),
         }
     }
 }
@@ -1293,9 +1519,13 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     let mut owner: Vec<Option<Index>> = vec![None; count + 1];
     let mut index = HashMap::new();
     for &i in &shape.indexes {
-        let position = i.position(count).ok_or_else(|| Problem::Other(format!("{i} needs at least {} arguments", i.magnitude())))?;
+        let position = i.position(count).ok_or_else(|| {
+            Problem::Other(format!("{i} needs at least {} arguments", i.magnitude()))
+        })?;
         if let Some(other) = owner[position] {
-            return Err(Problem::Other(format!("{other} and {i} would both be argument {position}")));
+            return Err(Problem::Other(format!(
+                "{other} and {i} would both be argument {position}"
+            )));
         }
         owner[position] = Some(i);
         index.insert(i, position);
@@ -1303,17 +1533,28 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // Slices must be non-empty; that is what makes {2..} safe for `rm`.
     let mut slices = HashMap::new();
     for &slice in &shape.slices {
-        let range = slice_range(slice, count).ok_or_else(|| Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1))))?;
+        let range = slice_range(slice, count).ok_or_else(|| {
+            Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1)))
+        })?;
         slices.insert(slice, range);
     }
-    let in_a_slice = |p: usize| slices.values().any(|&(lo, hi): &(usize, usize)| lo <= p && p <= hi);
+    let in_a_slice = |p: usize| {
+        slices
+            .values()
+            .any(|&(lo, hi): &(usize, usize)| lo <= p && p <= hi)
+    };
     // {@}: every position nothing else uses, neither an index nor a slice.
     // Constraint on change: {@} used to exclude only indexes, so in
     // `{1} {2..-2} {@}` it repeated what the slice had already passed; "the
     // rest" means what nothing else mentions, and duplicating on purpose is
     // still possible by writing the slice twice.
-    let rest: Vec<usize> =
-        if shape.rest.is_some() { (1..=count).filter(|&p| owner[p].is_none() && !in_a_slice(p)).collect() } else { Vec::new() };
+    let rest: Vec<usize> = if shape.rest.is_some() {
+        (1..=count)
+            .filter(|&p| owner[p].is_none() && !in_a_slice(p))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if shape.rest == Some(true) && rest.is_empty() {
         return Err(Problem::Other("{@+} would be empty".into()));
     }
@@ -1330,13 +1571,26 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
                 _ => None,
             })
             .collect();
-        let Some(&highest) = numbers.iter().max() else { continue };
-        let make = |k| if back { Index::Back(k) } else { Index::Front(k) };
+        let Some(&highest) = numbers.iter().max() else {
+            continue;
+        };
+        let make = |k| {
+            if back {
+                Index::Back(k)
+            } else {
+                Index::Front(k)
+            }
+        };
         for missing in (1..highest).filter(|k| !numbers.contains(k)).map(make) {
             // In range: the higher index was placed above, so this one fits.
-            let Some(position) = missing.position(count) else { continue };
+            let Some(position) = missing.position(count) else {
+                continue;
+            };
             if !in_a_slice(position) {
-                return Err(Problem::Gap { used: make(highest), missing });
+                return Err(Problem::Gap {
+                    used: make(highest),
+                    missing,
+                });
             }
         }
     }
@@ -1344,13 +1598,18 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // slice; an argument that nothing uses is almost always a mistake (the
     // `flif270 *.flif` case: silently processing only the first file).
     if shape.rest.is_none() {
-        let unused: Vec<usize> =
-            (1..=count).filter(|&p| owner[p].is_none() && !slices.values().any(|&(lo, hi)| lo <= p && p <= hi)).collect();
+        let unused: Vec<usize> = (1..=count)
+            .filter(|&p| owner[p].is_none() && !slices.values().any(|&(lo, hi)| lo <= p && p <= hi))
+            .collect();
         if !unused.is_empty() {
             return Err(Problem::Unused(unused));
         }
     }
-    Ok(Layout { index, rest, slices })
+    Ok(Layout {
+        index,
+        rest,
+        slices,
+    })
 }
 
 /// How the slices relate to the indexes and to each other at one count:
@@ -1361,7 +1620,11 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
 /// :param count: number of arguments
 /// :return: a comparable signature
 fn relations(shape: &Shape, count: usize) -> Vec<bool> {
-    let ranges: Vec<Option<(usize, usize)>> = shape.slices.iter().map(|&s| slice_range(s, count)).collect();
+    let ranges: Vec<Option<(usize, usize)>> = shape
+        .slices
+        .iter()
+        .map(|&s| slice_range(s, count))
+        .collect();
     let inside = |p: usize, r: Option<(usize, usize)>| r.is_some_and(|(lo, hi)| lo <= p && p <= hi);
     let mut signature = Vec::new();
     for &range in &ranges {
@@ -1373,10 +1636,9 @@ fn relations(shape: &Shape, count: usize) -> Vec<bool> {
     for (a, &first) in ranges.iter().enumerate() {
         for &second in &ranges[a + 1..] {
             // Overlap, and containment either way.
-            let overlap = matches!((first, second), (Some((l1, h1)), Some((l2, h2))) if l1 <= h2 && l2 <= h1);
-            let contains = |outer: Option<(usize, usize)>, inner: Option<(usize, usize)>| {
-                matches!((outer, inner), (Some((lo, hi)), Some((l, h))) if lo <= l && h <= hi)
-            };
+            let overlap =
+                matches!((first, second), (Some((l1, h1)), Some((l2, h2))) if l1 <= h2 && l2 <= h1);
+            let contains = |outer: Option<(usize, usize)>, inner: Option<(usize, usize)>| matches!((outer, inner), (Some((lo, hi)), Some((l, h))) if lo <= l && h <= hi);
             signature.extend([overlap, contains(first, second), contains(second, first)]);
         }
     }
@@ -1395,7 +1657,9 @@ fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Pro
     // E.g. in `{1..4} {-1}`, with 3 arguments the slice would take the last
     // one too, which nobody writing that template intends.
     if relations(shape, count) != relations(shape, plenty) {
-        return Err(Problem::Other(format!("with {count} arguments, a slice would share different arguments with the other references than with more")));
+        return Err(Problem::Other(format!(
+            "with {count} arguments, a slice would share different arguments with the other references than with more"
+        )));
     }
     Ok(layout)
 }
@@ -1412,7 +1676,9 @@ fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Pro
 /// :return: the arity, or an error if no count works
 fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
     let plenty = 2 * shape.max_magnitude() + 1;
-    let mut counts: Vec<usize> = (0..plenty).filter(|&n| check_count(shape, n, plenty).is_ok()).collect();
+    let mut counts: Vec<usize> = (0..plenty)
+        .filter(|&n| check_count(shape, n, plenty).is_ok())
+        .collect();
     let mut from = check_count(shape, plenty, plenty).is_ok().then_some(plenty);
     // Fold a trailing run of accepted counts into the open-ended part, so
     // "at least 2" isn't spelled "2, 3, 4 or at least 5".
@@ -1429,12 +1695,16 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
         // must not appear in the message.
         let reason = match check_count(shape, plenty, plenty) {
             Err(Problem::Unused(positions)) => describe_unused(shape, &positions, plenty),
-            Err(Problem::Gap { used, missing }) => format!("{used} is used but {missing} is not, and no slice covers that argument"),
+            Err(Problem::Gap { used, missing }) => {
+                format!("{used} is used but {missing} is not, and no slice covers that argument")
+            }
             Err(Problem::Other(text)) => text,
             // Unreachable: `from` would be set.
             Ok(_) => String::new(),
         };
-        return Err(ParseError::whole(format!("no number of arguments works with this template: {reason}")));
+        return Err(ParseError::whole(format!(
+            "no number of arguments works with this template: {reason}"
+        )));
     }
     Ok(Arity { counts, from })
 }
@@ -1459,12 +1729,21 @@ fn describe_unused(shape: &Shape, positions: &[usize], plenty: usize) -> String 
     let k = shape.max_magnitude();
     // Front positions, then the middle (one name for all of it), then the
     // back, which keeps argument order.
-    let mut names: Vec<String> = positions.iter().filter(|&&p| p <= k).map(|p| format!("{{{p}}}")).collect();
+    let mut names: Vec<String> = positions
+        .iter()
+        .filter(|&&p| p <= k)
+        .map(|p| format!("{{{p}}}"))
+        .collect();
     let middle = positions.iter().any(|&p| p > k && p <= plenty - k);
     if middle {
         names.push("the ones in between".to_owned());
     }
-    names.extend(positions.iter().filter(|&&p| p > plenty - k).map(|&p| format!("{{-{}}}", plenty + 1 - p)));
+    names.extend(
+        positions
+            .iter()
+            .filter(|&&p| p > plenty - k)
+            .map(|&p| format!("{{-{}}}", plenty + 1 - p)),
+    );
     match names.split_last() {
         // Only the middle: no reference names it, so say what it is.
         Some((_, [])) if middle => "nothing uses the arguments in between".to_owned(),
@@ -1527,11 +1806,22 @@ impl fmt::Display for ExpandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExpandError::WrongArgCount { arity, got } => write!(f, "expected {arity}, got {got}"),
-            ExpandError::EmptyCommand => f.write_str("a command expanded to nothing (no program to run)"),
+            ExpandError::EmptyCommand => {
+                f.write_str("a command expanded to nothing (no program to run)")
+            }
             // The value is shown lossily: it's for a person to read, and the
             // real bytes are what the check ran on.
-            ExpandError::CheckFailed { reference, wants, value, found } => {
-                write!(f, "{reference} needs {wants}, but '{}' {found}", value.to_string_lossy())
+            ExpandError::CheckFailed {
+                reference,
+                wants,
+                value,
+                found,
+            } => {
+                write!(
+                    f,
+                    "{reference} needs {wants}, but '{}' {found}",
+                    value.to_string_lossy()
+                )
             }
         }
     }
@@ -1590,7 +1880,10 @@ impl Template {
     pub fn expand(&self, name: &str, args: &[OsString]) -> Result<Plan, ExpandError> {
         // Report only the first failed check, as before collecting them all;
         // running the rest costs a few stat calls on an error path.
-        let Preview { plan, failed_checks } = self.preview(name, args)?;
+        let Preview {
+            plan,
+            failed_checks,
+        } = self.preview(name, args)?;
         match failed_checks.into_iter().next() {
             Some(first) => Err(first),
             None => Ok(plan),
@@ -1608,7 +1901,10 @@ impl Template {
     /// :return: the plan and the checks it failed
     pub fn preview(&self, name: &str, args: &[OsString]) -> Result<Preview, ExpandError> {
         // Check the count up front; an accepted count always has a layout.
-        let wrong = || ExpandError::WrongArgCount { arity: self.arity.clone(), got: args.len() };
+        let wrong = || ExpandError::WrongArgCount {
+            arity: self.arity.clone(),
+            got: args.len(),
+        };
         if !self.arity.accepts(args.len()) {
             return Err(wrong());
         }
@@ -1617,14 +1913,20 @@ impl Template {
         // Expand each pipeline stage by stage, in template order so failures
         // are listed in the order they appear.
         let mut expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
-            p.stages.iter().map(|c| expand_command(c, &layout, name, args, &mut failed)).collect()
+            p.stages
+                .iter()
+                .map(|c| expand_command(c, &layout, name, args, &mut failed))
+                .collect()
         };
         let head = expand_pipeline(&self.head)?;
         let mut tail = Vec::with_capacity(self.tail.len());
         for (op, p) in &self.tail {
             tail.push((*op, expand_pipeline(p)?));
         }
-        Ok(Preview { plan: Plan { head, tail }, failed_checks: failed.0 })
+        Ok(Preview {
+            plan: Plan { head, tail },
+            failed_checks: failed.0,
+        })
     }
 }
 
@@ -1636,7 +1938,13 @@ impl Template {
 /// :param args: runtime arguments; already checked against the arity
 /// :param failed: where failed checks are recorded
 /// :return: the argv
-fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsString], failed: &mut Failures) -> Result<Argv, ExpandError> {
+fn expand_command(
+    command: &Command,
+    layout: &Layout,
+    name: &str,
+    args: &[OsString],
+    failed: &mut Failures,
+) -> Result<Argv, ExpandError> {
     let mut argv = Vec::with_capacity(command.words.len());
     for word in &command.words {
         // A several-argument reference repeats the word once per argument it
@@ -1659,7 +1967,11 @@ fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsStri
         }
     }
     // Only possible when every word of the command repeated zero times.
-    if argv.is_empty() { Err(ExpandError::EmptyCommand) } else { Ok(argv) }
+    if argv.is_empty() {
+        Err(ExpandError::EmptyCommand)
+    } else {
+        Ok(argv)
+    }
 }
 
 /// Apply a word's own check (`{:N}` at its end) to one finished copy.
@@ -1672,7 +1984,12 @@ fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
     if let Some(check) = word.check
         && let Err(found) = check.run(&entry)
     {
-        failed.record(ExpandError::CheckFailed { reference: format!("the word {}", word.source), wants: check.wants(), value: entry.clone(), found });
+        failed.record(ExpandError::CheckFailed {
+            reference: format!("the word {}", word.source),
+            wants: check.wants(),
+            value: entry.clone(),
+            found,
+        });
     }
     entry
 }
@@ -1686,7 +2003,14 @@ fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
 /// :param repeat: for a repeated word, the position this copy stands for
 /// :param failed: where failed checks are recorded
 /// :return: the entry, as OsString so non-UTF-8 filenames survive
-fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repeat: Option<usize>, failed: &mut Failures) -> OsString {
+fn build_entry(
+    word: &Word,
+    layout: &Layout,
+    name: &str,
+    args: &[OsString],
+    repeat: Option<usize>,
+    failed: &mut Failures,
+) -> OsString {
     let mut entry = OsString::new();
     for piece in &word.pieces {
         match piece {
@@ -1694,7 +2018,11 @@ fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repe
             Piece::Name => entry.push(name),
             // Positions are 1-based and in range: the layout checked them.
             Piece::Arg(index, format) => {
-                entry.push(format.render(&args[layout.index[index] - 1], || written(&index.to_string(), *format), failed));
+                entry.push(format.render(
+                    &args[layout.index[index] - 1],
+                    || written(&index.to_string(), *format),
+                    failed,
+                ));
             }
             Piece::Multi(multi, format) => {
                 let value = &args[repeat.expect("repeated words get a position") - 1];
@@ -1740,7 +2068,10 @@ mod tests {
     /// :param src: template source
     /// :return: e.g. "exactly 1 argument"
     fn arity(src: &str) -> String {
-        parse(src).unwrap_or_else(|e| panic!("{src}: {e}")).arity().to_string()
+        parse(src)
+            .unwrap_or_else(|e| panic!("{src}: {e}"))
+            .arity()
+            .to_string()
     }
 
     #[test]
@@ -1757,7 +2088,10 @@ mod tests {
         // No obvious recipient for arguments, so they're an error.
         let t = parse("true | true").unwrap();
         assert!(!t.implicit_rest);
-        assert!(matches!(t.expand("t", &os(&["x"])), Err(ExpandError::WrongArgCount { .. })));
+        assert!(matches!(
+            t.expand("t", &os(&["x"])),
+            Err(ExpandError::WrongArgCount { .. })
+        ));
     }
 
     #[test]
@@ -1767,8 +2101,17 @@ mod tests {
         let p = plan(src, &["my pic.flif"]);
         assert_eq!(p.head.len(), 3);
         assert_eq!(p.head[0], os(&["flif", "-d", "my pic.flif", "-"]));
-        assert_eq!(p.head[2], os(&["flif", "-E", "14", "-", "my pic.flif.rot.flif"]));
-        assert_eq!(p.tail, vec![(Op::And, vec![os(&["mv", "my pic.flif.rot.flif", "my pic.flif"])])]);
+        assert_eq!(
+            p.head[2],
+            os(&["flif", "-E", "14", "-", "my pic.flif.rot.flif"])
+        );
+        assert_eq!(
+            p.tail,
+            vec![(
+                Op::And,
+                vec![os(&["mv", "my pic.flif.rot.flif", "my pic.flif"])]
+            )]
+        );
     }
 
     #[test]
@@ -1776,17 +2119,29 @@ mod tests {
         // Single quotes are fully literal, braces and backslashes included.
         assert_eq!(argv(r"echo 'a {1} \n'", &[]), os(&["echo", r"a {1} \n"]));
         // Double quotes expand references and keep unknown escapes literal.
-        assert_eq!(argv(r#"echo "{1} \d \" \{""#, &["x"]), os(&["echo", r#"x \d " {"#]));
+        assert_eq!(
+            argv(r#"echo "{1} \d \" \{""#, &["x"]),
+            os(&["echo", r#"x \d " {"#])
+        );
         // Adjacent quoted and unquoted parts form one word.
-        assert_eq!(argv(r#"echo a'b c'"d"{1}"#, &["!"]), os(&["echo", "ab cd!"]));
+        assert_eq!(
+            argv(r#"echo a'b c'"d"{1}"#, &["!"]),
+            os(&["echo", "ab cd!"])
+        );
         // Empty quotes produce an empty argument rather than nothing.
-        assert_eq!(argv("printf %s '' {1}", &["x"]), os(&["printf", "%s", "", "x"]));
+        assert_eq!(
+            argv("printf %s '' {1}", &["x"]),
+            os(&["printf", "%s", "", "x"])
+        );
     }
 
     #[test]
     fn back_indexes() {
         // {-1} is the last argument, wherever it is.
-        assert_eq!(argv("cp -t {-1} {@+}", &["a", "b", "dir"]), os(&["cp", "-t", "dir", "a", "b"]));
+        assert_eq!(
+            argv("cp -t {-1} {@+}", &["a", "b", "dir"]),
+            os(&["cp", "-t", "dir", "a", "b"])
+        );
         assert_eq!(arity("cp -t {-1} {@+}"), "at least 2 arguments");
         // Front and back together: exact, and never the same argument twice.
         assert_eq!(arity("mv {1} {-1}"), "exactly 2 arguments");
@@ -1796,18 +2151,35 @@ mod tests {
     fn rest_is_what_nothing_else_uses() {
         // Arguments a slice passes aren't repeated by {@}.
         let src = "echo a {2..-2} {1} remaining {@}";
-        assert_eq!(argv(src, &["1", "2", "3", "4", "5"]), os(&["echo", "a", "2", "3", "1", "remaining", "4", "5"]));
+        assert_eq!(
+            argv(src, &["1", "2", "3", "4", "5"]),
+            os(&["echo", "a", "2", "3", "1", "remaining", "4", "5"])
+        );
         // Next to slices, {@} is the "and any others" that may be empty.
-        assert_eq!(argv("cmd {1} {2..3} {@}", &["a", "b"]), os(&["cmd", "a", "b"]));
-        assert_eq!(argv("cmd {..-1} -- {@}", &["a", "b", "c"]), os(&["cmd", "a", "b", "--", "c"]));
+        assert_eq!(
+            argv("cmd {1} {2..3} {@}", &["a", "b"]),
+            os(&["cmd", "a", "b"])
+        );
+        assert_eq!(
+            argv("cmd {..-1} -- {@}", &["a", "b", "c"]),
+            os(&["cmd", "a", "b", "--", "c"])
+        );
         // A {@+} that a slice always leaves empty is refused up front.
-        assert!(parse("cmd {1..} {@+}").unwrap_err().message.contains("{@+} would be empty"));
+        assert!(
+            parse("cmd {1..} {@+}")
+                .unwrap_err()
+                .message
+                .contains("{@+} would be empty")
+        );
     }
 
     #[test]
     fn rest_is_what_indexes_leave() {
         // {@} excludes arguments that {N}/{-N} use, so nothing is passed twice.
-        assert_eq!(argv("cmd {1} -- {@}", &["a", "b", "c"]), os(&["cmd", "a", "--", "b", "c"]));
+        assert_eq!(
+            argv("cmd {1} -- {@}", &["a", "b", "c"]),
+            os(&["cmd", "a", "--", "b", "c"])
+        );
         assert_eq!(argv("cmd {1} -- {@}", &["a"]), os(&["cmd", "a", "--"]));
         assert_eq!(arity("cmd {1} {@}"), "at least 1 argument");
         // {@+} demands at least one.
@@ -1819,15 +2191,27 @@ mod tests {
     #[test]
     fn slices_stop_before_their_end_and_are_never_empty() {
         // Start included, end not, both counted like {N} and {-N}.
-        assert_eq!(argv("echo {1} {2..4}", &["a", "b", "c"]), os(&["echo", "a", "b", "c"]));
-        assert_eq!(argv("echo {..-1} -- {-1}", &["a", "b", "c"]), os(&["echo", "a", "b", "--", "c"]));
+        assert_eq!(
+            argv("echo {1} {2..4}", &["a", "b", "c"]),
+            os(&["echo", "a", "b", "c"])
+        );
+        assert_eq!(
+            argv("echo {..-1} -- {-1}", &["a", "b", "c"]),
+            os(&["echo", "a", "b", "--", "c"])
+        );
         // The case that settled it: the last argument, then all the others.
-        assert_eq!(argv("echo {-1} {..-1}", &["1", "2", "3", "4", "5"]), os(&["echo", "5", "1", "2", "3", "4"]));
+        assert_eq!(
+            argv("echo {-1} {..-1}", &["1", "2", "3", "4", "5"]),
+            os(&["echo", "5", "1", "2", "3", "4"])
+        );
         // {2..} needs at least one argument to stand for: `rm {1} {2..}` with
         // one argument is an error, not `rm a`.
         assert_eq!(arity("cmd {1} {2..}"), "at least 2 arguments");
         // Slices may overlap indexes on purpose.
-        assert_eq!(argv("echo {1} {1..}", &["a", "b"]), os(&["echo", "a", "a", "b"]));
+        assert_eq!(
+            argv("echo {1} {1..}", &["a", "b"]),
+            os(&["echo", "a", "a", "b"])
+        );
     }
 
     #[test]
@@ -1835,18 +2219,30 @@ mod tests {
         // With 3 the slice would swallow {-1}; with 5 the 4th would be unused.
         assert_eq!(arity("cmd {1..4} {-1}"), "exactly 4 arguments");
         let t = parse("cmd {1..4} {-1}").unwrap();
-        assert_eq!(t.expand("t", &os(&["a", "b", "c", "d"])).unwrap().head[0], os(&["cmd", "a", "b", "c", "d"]));
+        assert_eq!(
+            t.expand("t", &os(&["a", "b", "c", "d"])).unwrap().head[0],
+            os(&["cmd", "a", "b", "c", "d"])
+        );
     }
 
     #[test]
     fn words_repeat_per_argument() {
         // -I{@} gives one -I per argument, and nothing at all for none.
-        assert_eq!(argv("gcc -I{@} -c {-1}", &["a", "b", "x.c"]), os(&["gcc", "-Ia", "-Ib", "-c", "x.c"]));
-        assert_eq!(argv("gcc -I{@} -c {-1}", &["x.c"]), os(&["gcc", "-c", "x.c"]));
+        assert_eq!(
+            argv("gcc -I{@} -c {-1}", &["a", "b", "x.c"]),
+            os(&["gcc", "-Ia", "-Ib", "-c", "x.c"])
+        );
+        assert_eq!(
+            argv("gcc -I{@} -c {-1}", &["x.c"]),
+            os(&["gcc", "-c", "x.c"])
+        );
         // The same reference twice in one word stays in step.
         assert_eq!(argv("env {@}={@}", &["a", "b"]), os(&["env", "a=a", "b=b"]));
         // So does a slice written two ways ({1..-1} is {..-1}).
-        assert_eq!(argv("echo {1..-1}:{..-1} {-1}", &["a", "b", "c"]), os(&["echo", "a:a", "b:b", "c"]));
+        assert_eq!(
+            argv("echo {1..-1}:{..-1} {-1}", &["a", "b", "c"]),
+            os(&["echo", "a:a", "b:b", "c"])
+        );
         // A dangerous prefix vanishes rather than standing alone.
         assert_eq!(argv("rm -rf /{@} {0}", &[]), os(&["rm", "-rf", "t"]));
     }
@@ -1871,7 +2267,10 @@ mod tests {
         // Operators end words, so spacing is optional, as in sh.
         let p = plan("a|b&&c||d;e", &[]);
         assert_eq!(p.head, vec![os(&["a"]), os(&["b"])]);
-        assert_eq!(p.tail.iter().map(|(op, _)| *op).collect::<Vec<_>>(), vec![Op::And, Op::Or, Op::Then]);
+        assert_eq!(
+            p.tail.iter().map(|(op, _)| *op).collect::<Vec<_>>(),
+            vec![Op::And, Op::Or, Op::Then]
+        );
     }
 
     #[test]
@@ -1891,7 +2290,10 @@ mod tests {
     #[test]
     fn arity_phrasing() {
         // Non-contiguous arities are spelled out rather than approximated.
-        let odd = Arity { counts: vec![2, 4, 5], from: Some(7) };
+        let odd = Arity {
+            counts: vec![2, 4, 5],
+            from: Some(7),
+        };
         assert_eq!(odd.to_string(), "2, 4 to 5 or at least 7 arguments");
         assert!(odd.accepts(5) && !odd.accepts(6) && odd.accepts(70));
     }
@@ -1899,24 +2301,42 @@ mod tests {
     #[test]
     fn empty_command_from_rest() {
         // A command that is only {@} needs at least one argument to run.
-        assert_eq!(parse("{@}").unwrap().expand("t", &[]), Err(ExpandError::EmptyCommand));
+        assert_eq!(
+            parse("{@}").unwrap().expand("t", &[]),
+            Err(ExpandError::EmptyCommand)
+        );
     }
 
     #[test]
     fn slices_fill_gaps_in_numbering() {
         // {2} is covered by the slice, so {1} {3} has no gap here.
-        assert_eq!(argv("echo a {2..} {1} {3}", &["x", "y", "z", "w"]), os(&["echo", "a", "y", "z", "w", "x", "z"]));
+        assert_eq!(
+            argv("echo a {2..} {1} {3}", &["x", "y", "z", "w"]),
+            os(&["echo", "a", "y", "z", "w", "x", "z"])
+        );
         assert_eq!(arity("echo a {2..} {1} {3}"), "at least 3 arguments");
         // The same from the back: {..-1} covers {-2}.
-        assert_eq!(argv("echo {-1} {-3} {..-1}", &["a", "b", "c"]), os(&["echo", "c", "a", "a", "b"]));
+        assert_eq!(
+            argv("echo {-1} {-3} {..-1}", &["a", "b", "c"]),
+            os(&["echo", "c", "a", "a", "b"])
+        );
         // Still a gap if the slice doesn't reach it, now a whole-template error.
         let err = parse("echo {1} {3} {5..}").unwrap_err();
-        assert!(err.message.ends_with(": {3} is used but {2} is not, and no slice covers that argument"), "{}", err.message);
+        assert!(
+            err.message
+                .ends_with(": {3} is used but {2} is not, and no slice covers that argument"),
+            "{}",
+            err.message
+        );
         // {@} never fills a gap: `cp {1} {3} {@}` stays a typo.
         assert!(parse("cp {1} {3} {@}").is_err());
         // With the gap covered, the last argument is still unused here.
         let err = parse("echo a {2..-1} {1} {3}").unwrap_err();
-        assert!(err.message.ends_with(": nothing uses argument {-1}"), "{}", err.message);
+        assert!(
+            err.message.ends_with(": nothing uses argument {-1}"),
+            "{}",
+            err.message
+        );
         // {@} can't fill a gap between references, but it can take what's
         // left at the end, which settles the last argument.
         assert_eq!(arity("echo a {2..-1} {1} {3} {@}"), "at least 4 arguments");
@@ -1927,11 +2347,19 @@ mod tests {
         // Arguments 1 and 2 are never used, whatever the count.
         let err = parse("cmd {3..}").unwrap_err();
         assert_eq!(err.offset, None);
-        assert!(err.message.ends_with(": nothing uses arguments {1} and {2}"), "{}", err.message);
+        assert!(
+            err.message
+                .ends_with(": nothing uses arguments {1} and {2}"),
+            "{}",
+            err.message
+        );
         // A slice ending at {-1} leaves the last argument out; the message
         // names it as a template would, without an internal count or a fix.
         let err = parse("echo a {2..-1}").unwrap_err();
-        assert_eq!(err.message, "no number of arguments works with this template: nothing uses arguments {1} and {-1}");
+        assert_eq!(
+            err.message,
+            "no number of arguments works with this template: nothing uses arguments {1} and {-1}"
+        );
         // {1} and {-1} are distinct arguments, but nothing uses the middle.
         assert_eq!(arity("cmd {1} {-1}"), "exactly 2 arguments");
     }
@@ -1976,17 +2404,31 @@ mod tests {
     #[test]
     fn end_rule_is_spelled_out() {
         // Whoever writes an always-empty slice gets the rule with the error.
-        assert!(parse("echo {2..2}").unwrap_err().message.contains("stops before its end"));
+        assert!(
+            parse("echo {2..2}")
+                .unwrap_err()
+                .message
+                .contains("stops before its end")
+        );
     }
 
     #[test]
     fn escaped_specials_are_literal() {
         // Escaping or quoting gets any reserved character through verbatim.
-        assert_eq!(argv(r"find . -exec rm '{}' \;", &[]), os(&["find", ".", "-exec", "rm", "{}", ";"]));
-        assert_eq!(argv(r"echo \$HOME '*' \{1\}", &[]), os(&["echo", "$HOME", "*", "{1}"]));
+        assert_eq!(
+            argv(r"find . -exec rm '{}' \;", &[]),
+            os(&["find", ".", "-exec", "rm", "{}", ";"])
+        );
+        assert_eq!(
+            argv(r"echo \$HOME '*' \{1\}", &[]),
+            os(&["echo", "$HOME", "*", "{1}"])
+        );
         // Inside double quotes `$` and backticks need a backslash, as in sh;
         // single quotes keep them literal with no escaping at all.
-        assert_eq!(argv(r#"echo "\$1 \`x\`" '$2'"#, &[]), os(&["echo", "$1 `x`", "$2"]));
+        assert_eq!(
+            argv(r#"echo "\$1 \`x\`" '$2'"#, &[]),
+            os(&["echo", "$1 `x`", "$2"])
+        );
     }
 
     #[test]
@@ -1994,7 +2436,10 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         // Filenames need not be UTF-8 on Unix; they must pass through byte-exact.
         let raw = std::ffi::OsStr::from_bytes(b"caf\xe9.mkv").to_os_string();
-        let p = parse("ffmpeg -i {1} {1}.out").unwrap().expand("t", std::slice::from_ref(&raw)).unwrap();
+        let p = parse("ffmpeg -i {1} {1}.out")
+            .unwrap()
+            .expand("t", std::slice::from_ref(&raw))
+            .unwrap();
         assert_eq!(p.head[0][2], raw);
         assert_eq!(p.head[0][3].as_bytes(), b"caf\xe9.mkv.out");
     }
@@ -2008,9 +2453,18 @@ mod tests {
         // extension goes, a dotfile has none, a trailing slash is ignored,
         // and `/` has no basename or parent to give, so it stays itself.
         assert_eq!(argv("echo {1://}", &["file"]), os(&["echo", "."]));
-        assert_eq!(argv("echo {1:.} {1:/.}", &["a.tar.gz"]), os(&["echo", "a.tar", "a.tar"]));
-        assert_eq!(argv("echo {1:.} {1:/.}", &[".bashrc"]), os(&["echo", ".bashrc", ".bashrc"]));
-        assert_eq!(argv("echo {1:/} {1://}", &["dir/sub/"]), os(&["echo", "sub", "dir"]));
+        assert_eq!(
+            argv("echo {1:.} {1:/.}", &["a.tar.gz"]),
+            os(&["echo", "a.tar", "a.tar"])
+        );
+        assert_eq!(
+            argv("echo {1:.} {1:/.}", &[".bashrc"]),
+            os(&["echo", ".bashrc", ".bashrc"])
+        );
+        assert_eq!(
+            argv("echo {1:/} {1://}", &["dir/sub/"]),
+            os(&["echo", "sub", "dir"])
+        );
         assert_eq!(argv("echo {1:/} {1://}", &["/"]), os(&["echo", "/", "/"]));
         // Modifiers only change text, so arity is unaffected.
         assert_eq!(arity("cp {1:F} {2:N}"), "exactly 2 arguments");
@@ -2019,25 +2473,44 @@ mod tests {
     #[test]
     fn modifiers_on_several_argument_references() {
         // Applied per item, and words still repeat as usual.
-        assert_eq!(argv("echo {@:/.}.png", &["a/x.jpg", "b/y.jpg"]), os(&["echo", "x.png", "y.png"]));
+        assert_eq!(
+            argv("echo {@:/.}.png", &["a/x.jpg", "b/y.jpg"]),
+            os(&["echo", "x.png", "y.png"])
+        );
         // One reference with different modifiers in a word stays in step.
-        assert_eq!(argv("echo {@://}/old-{@:/}", &["a/x", "b/y"]), os(&["echo", "a/old-x", "b/old-y"]));
+        assert_eq!(
+            argv("echo {@://}/old-{@:/}", &["a/x", "b/y"]),
+            os(&["echo", "a/old-x", "b/old-y"])
+        );
         // Slices and back indexes take formats too.
-        assert_eq!(argv("echo {1://} {2..:/} {-1:/.}", &["p/q", "r/s", "t/u.v"]), os(&["echo", "p", "s", "u.v", "u"]));
+        assert_eq!(
+            argv("echo {1://} {2..:/} {-1:/.}", &["p/q", "r/s", "t/u.v"]),
+            os(&["echo", "p", "s", "u.v", "u"])
+        );
     }
 
     #[test]
     fn modifiers_keep_non_utf8_bytes() {
         use std::os::unix::ffi::OsStrExt;
         let raw = std::ffi::OsStr::from_bytes(b"dir/caf\xe9.mkv").to_os_string();
-        let p = parse("echo {1:/.}").unwrap().expand("t", std::slice::from_ref(&raw)).unwrap();
+        let p = parse("echo {1:/.}")
+            .unwrap()
+            .expand("t", std::slice::from_ref(&raw))
+            .unwrap();
         assert_eq!(p.head[0][1].as_bytes(), b"caf\xe9");
     }
 
     #[test]
     fn format_syntax_errors() {
         // Each case: source, and the byte offset the error must report.
-        let cases = [("echo {1:}", 5), ("echo {1:X}", 5), ("echo {1:FD}", 5), ("echo {1:/./}", 5), ("echo {:F}", 5), ("echo {0:/}", 5)];
+        let cases = [
+            ("echo {1:}", 5),
+            ("echo {1:X}", 5),
+            ("echo {1:FD}", 5),
+            ("echo {1:/./}", 5),
+            ("echo {:F}", 5),
+            ("echo {0:/}", 5),
+        ];
         for (src, offset) in cases {
             let err = parse(src).expect_err(src);
             assert_eq!(err.offset, Some(offset), "{src}: {}", err.message);
@@ -2062,13 +2535,20 @@ mod tests {
     /// :return: `Ok(argv)` or the error as text
     fn try_expand(src: &str, arg: &std::path::Path) -> Result<Argv, String> {
         let t = parse(src).unwrap();
-        t.expand("t", &[arg.as_os_str().to_os_string()]).map(|p| p.head[0].clone()).map_err(|e| e.to_string())
+        t.expand("t", &[arg.as_os_str().to_os_string()])
+            .map(|p| p.head[0].clone())
+            .map_err(|e| e.to_string())
     }
 
     #[test]
     fn file_checks() {
         let dir = scratch("checks");
-        let (file, sub, missing, dangling) = (dir.join("f.txt"), dir.join("d"), dir.join("nope"), dir.join("link"));
+        let (file, sub, missing, dangling) = (
+            dir.join("f.txt"),
+            dir.join("d"),
+            dir.join("nope"),
+            dir.join("link"),
+        );
         fs::write(&file, "x").unwrap();
         fs::create_dir(&sub).unwrap();
         std::os::unix::fs::symlink(dir.join("gone"), &dangling).unwrap();
@@ -2080,7 +2560,11 @@ mod tests {
         assert!(try_expand("touch {1:N}", &missing).is_ok());
         // Failing ones say what was wanted and what was found.
         let wants = |src: &str, arg: &std::path::Path| try_expand(src, arg).unwrap_err();
-        assert!(wants("cat {1:F}", &sub).ends_with("d' is a directory"), "{}", wants("cat {1:F}", &sub));
+        assert!(
+            wants("cat {1:F}", &sub).ends_with("d' is a directory"),
+            "{}",
+            wants("cat {1:F}", &sub)
+        );
         assert!(wants("cat {1:F}", &missing).starts_with("{1:F} needs an existing file, but '"));
         assert!(wants("cat {1:F}", &missing).ends_with("' does not exist"));
         assert!(wants("ls {1:D}", &file).ends_with("' is a file"));
@@ -2093,18 +2577,40 @@ mod tests {
         // F means "not a directory": devices and pipes pass it, D still
         // refuses them, and N sees that they exist.
         let fifo = dir.join("fifo");
-        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
         for special in [std::path::Path::new("/dev/null"), &fifo] {
-            assert!(try_expand("cat {1:F}", special).is_ok(), "{}", special.display());
+            assert!(
+                try_expand("cat {1:F}", special).is_ok(),
+                "{}",
+                special.display()
+            );
             assert!(wants("ls {1:D}", special).ends_with("' is not a directory"));
             assert!(wants("touch {1:N}", special).ends_with("' already exists"));
         }
         // The check sees the full path; the modifier applies afterwards.
-        assert_eq!(try_expand("echo {1:F/.}", &file).unwrap(), os(&["echo", "f"]));
+        assert_eq!(
+            try_expand("echo {1:F/.}", &file).unwrap(),
+            os(&["echo", "f"])
+        );
         // Several-argument references check every item and name themselves.
         let t = parse("ls {@:D}").unwrap();
-        let err = t.expand("t", &[sub.clone().into_os_string(), file.clone().into_os_string()]).unwrap_err();
-        assert!(err.to_string().starts_with("{@:D} needs an existing directory"), "{err}");
+        let err = t
+            .expand(
+                "t",
+                &[sub.clone().into_os_string(), file.clone().into_os_string()],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("{@:D} needs an existing directory"),
+            "{err}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2118,17 +2624,33 @@ mod tests {
         assert!(try_expand(src, &input).is_ok());
         fs::write(&output, "old").unwrap();
         let err = try_expand(src, &input).unwrap_err();
-        assert!(err.starts_with("the word {1}.jpg{:N} needs a path that doesn't exist yet, but '"), "{err}");
+        assert!(
+            err.starts_with("the word {1}.jpg{:N} needs a path that doesn't exist yet, but '"),
+            "{err}"
+        );
         assert!(err.ends_with("photo.png.jpg' already exists"), "{err}");
         // A repeated word is checked once per copy.
         let t = parse("touch {@+}.jpg{:N}").unwrap();
         let other = dir.join("other.png");
-        let err = t.expand("t", &[other.into_os_string(), input.clone().into_os_string()]).unwrap_err();
-        assert!(err.to_string().ends_with("photo.png.jpg' already exists"), "{err}");
+        let err = t
+            .expand(
+                "t",
+                &[other.into_os_string(), input.clone().into_os_string()],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().ends_with("photo.png.jpg' already exists"),
+            "{err}"
+        );
         // Literal words can be checked too, and keep the implicit {@}.
         let t = parse("cat /no/such/config{:F}").unwrap();
         assert!(t.implicit_rest);
-        assert!(t.expand("t", &[]).unwrap_err().to_string().ends_with("'/no/such/config' does not exist"));
+        assert!(
+            t.expand("t", &[])
+                .unwrap_err()
+                .to_string()
+                .ends_with("'/no/such/config' does not exist")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2141,17 +2663,35 @@ mod tests {
         // repeated {1:F} is reported once.
         let t = parse("magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && rm {1:F}").unwrap();
         let preview = t.preview("t", &[input.clone().into_os_string()]).unwrap();
-        let messages: Vec<String> = preview.failed_checks.iter().map(ToString::to_string).collect();
+        let messages: Vec<String> = preview
+            .failed_checks
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert_eq!(messages.len(), 2, "{messages:?}");
-        assert!(messages[0].starts_with("{1:F} needs an existing file"), "{messages:?}");
-        assert!(messages[1].starts_with("the word {1}.jpg{:N}"), "{messages:?}");
+        assert!(
+            messages[0].starts_with("{1:F} needs an existing file"),
+            "{messages:?}"
+        );
+        assert!(
+            messages[1].starts_with("the word {1}.jpg{:N}"),
+            "{messages:?}"
+        );
         // The plan is complete regardless.
         assert_eq!(preview.plan.tail.len(), 1);
         assert_eq!(preview.plan.head[1][2], output.clone().into_os_string());
         // expand reports only the first.
-        assert_eq!(t.expand("t", &[input.into_os_string()]).unwrap_err().to_string(), messages[0]);
+        assert_eq!(
+            t.expand("t", &[input.into_os_string()])
+                .unwrap_err()
+                .to_string(),
+            messages[0]
+        );
         // A wrong count is still an error: there's nothing to preview.
-        assert!(matches!(t.preview("t", &[]), Err(ExpandError::WrongArgCount { .. })));
+        assert!(matches!(
+            t.preview("t", &[]),
+            Err(ExpandError::WrongArgCount { .. })
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2179,8 +2719,16 @@ mod tests {
         // The same argument can't be a file and absent, or a file and a directory.
         let err = parse("magick {1:F} ppm: | cjpeg -outfile {1:N}.jpg").unwrap_err();
         assert_eq!(err.offset, Some(35));
-        assert_eq!(err.message, "`{1:N}` contradicts `{1:F}`: an argument can't both exist and not exist");
-        assert!(parse("cp {@:F} {@:D}").unwrap_err().message.contains("both a file and a directory"));
+        assert_eq!(
+            err.message,
+            "`{1:N}` contradicts `{1:F}`: an argument can't both exist and not exist"
+        );
+        assert!(
+            parse("cp {@:F} {@:D}")
+                .unwrap_err()
+                .message
+                .contains("both a file and a directory")
+        );
         // Compatible checks, or checks on different arguments, are fine.
         assert!(parse("cat {1:F} {1:E}").is_ok());
         assert!(parse("cp {1:F} {2:N}").is_ok());

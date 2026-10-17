@@ -45,7 +45,11 @@ pub struct Slot {
 }
 
 /// An unpatched slot, for stubs to initialize their static with.
-pub const EMPTY: Slot = Slot { marker: MARKER, len: [0; 4], data: [0; CAPACITY] };
+pub const EMPTY: Slot = Slot {
+    marker: MARKER,
+    len: [0; 4],
+    data: [0; CAPACITY],
+};
 
 /// Why a slot could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +67,9 @@ impl fmt::Display for SlotError {
     /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SlotError::Empty => f.write_str("this is an unpatched aliasmux stub; create aliases from it with `aliasmux patch`"),
+            SlotError::Empty => f.write_str(
+                "this is an unpatched aliasmux stub; create aliases from it with `aliasmux patch`",
+            ),
             SlotError::Corrupt(why) => write!(f, "corrupt alias slot: {why}"),
         }
     }
@@ -81,10 +87,15 @@ pub fn decode(slot: &Slot) -> Result<(&str, &str), SlotError> {
     }
     // A length past the buffer can only come from corruption or a mismatched
     // patcher; reading it would go out of bounds.
-    let payload = slot.data.get(..len).ok_or(SlotError::Corrupt("length exceeds capacity"))?;
-    let text = std::str::from_utf8(payload).map_err(|_| SlotError::Corrupt("payload is not UTF-8"))?;
+    let payload = slot
+        .data
+        .get(..len)
+        .ok_or(SlotError::Corrupt("length exceeds capacity"))?;
+    let text =
+        std::str::from_utf8(payload).map_err(|_| SlotError::Corrupt("payload is not UTF-8"))?;
     // The name ends at the first newline; templates are single lines.
-    text.split_once('\n').ok_or(SlotError::Corrupt("missing name"))
+    text.split_once('\n')
+        .ok_or(SlotError::Corrupt("missing name"))
 }
 
 /// Build the bytes of a patched slot.
@@ -100,7 +111,10 @@ pub fn encode(name: &str, template: &str) -> Result<Vec<u8>, String> {
     }
     let payload = format!("{name}\n{template}");
     if payload.len() > CAPACITY {
-        return Err(format!("alias `{name}` is {} bytes; patched stubs hold at most {CAPACITY}", payload.len()));
+        return Err(format!(
+            "alias `{name}` is {} bytes; patched stubs hold at most {CAPACITY}",
+            payload.len()
+        ));
     }
     // Marker, length, payload, then zero padding up to the full slot size, so
     // leftovers from a previous payload can never survive a re-patch.
@@ -119,12 +133,20 @@ pub fn encode(name: &str, template: &str) -> Result<Vec<u8>, String> {
 pub fn locate(image: &[u8]) -> Result<usize, String> {
     // Collect every marker position; there must be exactly one. Zero means
     // this isn't a stub; several would make "which one runs?" a guess.
-    let hits: Vec<usize> = image.windows(MARKER.len()).enumerate().filter(|(_, w)| *w == MARKER).map(|(i, _)| i).collect();
+    let hits: Vec<usize> = image
+        .windows(MARKER.len())
+        .enumerate()
+        .filter(|(_, w)| *w == MARKER)
+        .map(|(i, _)| i)
+        .collect();
     match hits.as_slice() {
         [] => Err("no alias slot found (not an aliasmux stub?)".into()),
         &[offset] if offset + SIZE <= image.len() => Ok(offset),
         [_] => Err("alias slot is truncated".into()),
-        _ => Err(format!("found {} alias slot markers; expected exactly one", hits.len())),
+        _ => Err(format!(
+            "found {} alias slot markers; expected exactly one",
+            hits.len()
+        )),
     }
 }
 
@@ -134,7 +156,9 @@ pub fn locate(image: &[u8]) -> Result<usize, String> {
 /// :param offset: slot position from [`locate`]
 /// :return: `(name, template)`
 pub fn decode_at(image: &[u8], offset: usize) -> Result<(&str, &str), SlotError> {
-    let bytes = image.get(offset..offset + SIZE).ok_or(SlotError::Corrupt("slot is truncated"))?;
+    let bytes = image
+        .get(offset..offset + SIZE)
+        .ok_or(SlotError::Corrupt("slot is truncated"))?;
     // SAFETY: `Slot` is repr(C) and made only of byte arrays, so it has
     // alignment 1, no padding, and every bit pattern is valid. `bytes` is
     // exactly `SIZE` long, so the reference covers only valid memory.
@@ -152,7 +176,8 @@ mod tests {
         let mut image = vec![0xAAu8; 100];
         let start = image.len();
         // SAFETY: as in `decode_at`; the slot is plain bytes.
-        let empty = unsafe { std::slice::from_raw_parts((&EMPTY as *const Slot).cast::<u8>(), SIZE) };
+        let empty =
+            unsafe { std::slice::from_raw_parts((&EMPTY as *const Slot).cast::<u8>(), SIZE) };
         image.extend_from_slice(empty);
         image.extend_from_slice(&[0xBB; 50]);
 
@@ -162,8 +187,12 @@ mod tests {
         assert_eq!(decode_at(&image, offset), Err(SlotError::Empty));
 
         // Patched: reads back exactly what was written.
-        image[offset..offset + SIZE].copy_from_slice(&encode("mkvize", "ffmpeg -i {1} {1}.mkv").unwrap());
-        assert_eq!(decode_at(&image, offset), Ok(("mkvize", "ffmpeg -i {1} {1}.mkv")));
+        image[offset..offset + SIZE]
+            .copy_from_slice(&encode("mkvize", "ffmpeg -i {1} {1}.mkv").unwrap());
+        assert_eq!(
+            decode_at(&image, offset),
+            Ok(("mkvize", "ffmpeg -i {1} {1}.mkv"))
+        );
     }
 
     #[test]

@@ -24,7 +24,11 @@ fn main() {
     let current: &Slot = std::hint::black_box(&SLOT);
     match slot::decode(current) {
         // The rest of argv (minus our own name) goes to the alias.
-        Ok((name, template)) => aliasmux_core::run_alias(name, template, &std::env::args_os().skip(1).collect::<Vec<_>>()),
+        Ok((name, template)) => aliasmux_core::run_alias(
+            name,
+            template,
+            &std::env::args_os().skip(1).collect::<Vec<_>>(),
+        ),
         // Running the raw stub, or a damaged copy: explain, using the shell's
         // "not executable" status since there is nothing to run.
         Err(err) => {

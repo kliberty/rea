@@ -37,7 +37,11 @@ fn split_line(raw: &str) -> Option<Result<(&str, &str), &'static str>> {
         return None;
     }
     // Split at the first `=` only; later ones belong to the template.
-    Some(line.split_once('=').map(|(name, template)| (name.trim(), template.trim())).ok_or("expected `name = template`"))
+    Some(
+        line.split_once('=')
+            .map(|(name, template)| (name.trim(), template.trim()))
+            .ok_or("expected `name = template`"),
+    )
 }
 
 /// Check that a name is usable as a file name on `PATH`.
@@ -54,10 +58,14 @@ pub fn name_problem(name: &str) -> Option<String> {
     if name.is_empty() {
         Some("the alias name is empty".into())
     } else if let Some(bad) = name.chars().find(|&c| !allowed(c)) {
-        Some(format!("alias name `{name}` contains `{bad}`; use letters, digits, `.`, `_`, `+` or `-`"))
+        Some(format!(
+            "alias name `{name}` contains `{bad}`; use letters, digits, `.`, `_`, `+` or `-`"
+        ))
     } else if name.starts_with(['-', '.']) {
         // A leading `-` reads as an option; a leading `.` makes a hidden file.
-        Some(format!("alias name `{name}` must not start with `-` or `.`"))
+        Some(format!(
+            "alias name `{name}` must not start with `-` or `.`"
+        ))
     } else {
         None
     }
@@ -70,7 +78,11 @@ pub fn name_problem(name: &str) -> Option<String> {
 /// :return: the entries, or every problem found (not just the first)
 pub fn parse(src: &str) -> Result<Vec<Entry<'_>>, Vec<FileError>> {
     let (entries, errors) = parse_lenient(src);
-    if errors.is_empty() { Ok(entries) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(entries)
+    } else {
+        Err(errors)
+    }
 }
 
 /// Parse the file, keeping the valid entries even when other lines have
@@ -92,7 +104,10 @@ pub fn parse_lenient(src: &str) -> (Vec<Entry<'_>>, Vec<FileError>) {
             None => continue,
             Some(Ok(halves)) => halves,
             Some(Err(message)) => {
-                errors.push(FileError { line, message: message.into() });
+                errors.push(FileError {
+                    line,
+                    message: message.into(),
+                });
                 continue;
             }
         };
@@ -103,15 +118,25 @@ pub fn parse_lenient(src: &str) -> (Vec<Entry<'_>>, Vec<FileError>) {
         }
         // A duplicate would make lookup order-dependent, which is a trap.
         if let Some(first) = seen.insert(name, line) {
-            errors.push(FileError { line, message: format!("alias `{name}` is already defined on line {first}") });
+            errors.push(FileError {
+                line,
+                message: format!("alias `{name}` is already defined on line {first}"),
+            });
             continue;
         }
         // An empty template has nothing to run.
         if template.is_empty() {
-            errors.push(FileError { line, message: format!("alias `{name}` has an empty template") });
+            errors.push(FileError {
+                line,
+                message: format!("alias `{name}` has an empty template"),
+            });
             continue;
         }
-        entries.push(Entry { name, template, line });
+        entries.push(Entry {
+            name,
+            template,
+            line,
+        });
     }
     (entries, errors)
 }
@@ -125,8 +150,22 @@ mod tests {
         let src = "# comment\n\nll = ls -la\n  enc = ffmpeg -crf=20 {1}  \n";
         let entries = parse(src).unwrap();
         // Templates keep inner `=` and lose surrounding whitespace.
-        assert_eq!(entries[0], Entry { name: "ll", template: "ls -la", line: 3 });
-        assert_eq!(entries[1], Entry { name: "enc", template: "ffmpeg -crf=20 {1}", line: 4 });
+        assert_eq!(
+            entries[0],
+            Entry {
+                name: "ll",
+                template: "ls -la",
+                line: 3
+            }
+        );
+        assert_eq!(
+            entries[1],
+            Entry {
+                name: "enc",
+                template: "ffmpeg -crf=20 {1}",
+                line: 4
+            }
+        );
     }
 
     #[test]

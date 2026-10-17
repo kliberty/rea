@@ -201,12 +201,25 @@ enum Cmd {
 pub fn main() -> ! {
     // `eval` replaces the process or exits itself; the rest return a status.
     let status = match Cli::parse().command {
-        Cmd::New { name, template, output } => new(&name, &template, &output),
-        Cmd::Patch { file, names, output, prune } => patch(&file, &names, &output, prune),
+        Cmd::New {
+            name,
+            template,
+            output,
+        } => new(&name, &template, &output),
+        Cmd::Patch {
+            file,
+            names,
+            output,
+            prune,
+        } => patch(&file, &names, &output, prune),
         Cmd::Check { file } => check(&file),
         Cmd::List { dir } => list(dir.as_deref()),
         Cmd::Inspect { files } => inspect(&files),
-        Cmd::Explain { is_template, target, args } => explain(is_template, &target, &args),
+        Cmd::Explain {
+            is_template,
+            target,
+            args,
+        } => explain(is_template, &target, &args),
         Cmd::Eval { template, args } => eval(template, &args),
     };
     std::process::exit(status);
@@ -252,20 +265,32 @@ fn definition_problem(name: &str, template: &str) -> Option<String> {
 /// :param path: the alias file
 /// :param source: [out] holds the file's contents, which the entries borrow
 /// :return: the entries, or every problem found, formatted as `path:line: ...`
-fn load_alias_file<'a>(path: &Path, source: &'a mut String) -> Result<Vec<aliasfile::Entry<'a>>, Vec<String>> {
-    *source = fs::read_to_string(path).map_err(|err| vec![format!("cannot read {}: {err}", path.display())])?;
+fn load_alias_file<'a>(
+    path: &Path,
+    source: &'a mut String,
+) -> Result<Vec<aliasfile::Entry<'a>>, Vec<String>> {
+    *source = fs::read_to_string(path)
+        .map_err(|err| vec![format!("cannot read {}: {err}", path.display())])?;
     // Collect every problem in the file, so one run shows every typo: line
     // problems (format, names, duplicates), plus the templates of every line
     // that was otherwise fine.
     let (entries, errors) = aliasfile::parse_lenient(source);
-    let mut problems: Vec<(usize, String)> = errors.into_iter().map(|e| (e.line, e.message)).collect();
-    problems.extend(entries.iter().filter_map(|e| definition_problem(e.name, e.template).map(|p| (e.line, p))));
+    let mut problems: Vec<(usize, String)> =
+        errors.into_iter().map(|e| (e.line, e.message)).collect();
+    problems.extend(
+        entries
+            .iter()
+            .filter_map(|e| definition_problem(e.name, e.template).map(|p| (e.line, p))),
+    );
     // Report in file order, whichever check found each problem.
     problems.sort_by_key(|(line, _)| *line);
     if problems.is_empty() {
         Ok(entries)
     } else {
-        Err(problems.into_iter().map(|(line, p)| format!("{}:{line}: {p}", path.display())).collect())
+        Err(problems
+            .into_iter()
+            .map(|(line, p)| format!("{}:{line}: {p}", path.display()))
+            .collect())
     }
 }
 
@@ -308,11 +333,13 @@ fn eval(template: String, args: &[OsString]) -> ! {
 /// :return: the template, without its trailing line ending
 fn template_from_stdin() -> Result<String, String> {
     let mut text = String::new();
-    io::stdin().read_to_string(&mut text).map_err(|err| match err.kind() {
-        // Templates are text; the alias slot and file format both require UTF-8.
-        io::ErrorKind::InvalidData => "the template on stdin is not valid UTF-8".to_owned(),
-        _ => format!("cannot read the template from stdin: {err}"),
-    })?;
+    io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|err| match err.kind() {
+            // Templates are text; the alias slot and file format both require UTF-8.
+            io::ErrorKind::InvalidData => "the template on stdin is not valid UTF-8".to_owned(),
+            _ => format!("cannot read the template from stdin: {err}"),
+        })?;
     // `echo` and heredocs end the line (or add blank lines), so trailing line
     // endings are dropped; any other whitespace is harmless to the parser.
     let line = text.trim_end_matches(['\n', '\r']);
@@ -340,8 +367,11 @@ fn template_from_stdin() -> Result<String, String> {
 ///
 /// :return: the directory
 fn own_dir() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|err| format!("cannot locate this program: {err}"))?;
-    exe.parent().map(Path::to_path_buf).ok_or_else(|| "cannot locate this program's directory".into())
+    let exe =
+        std::env::current_exe().map_err(|err| format!("cannot locate this program: {err}"))?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "cannot locate this program's directory".into())
 }
 
 /// A stub, read into memory, with its slot located.
@@ -362,13 +392,21 @@ impl Stub {
             Some(path) => path.to_path_buf(),
             None => own_dir()?.join(STUB_NAME),
         };
-        let image = fs::read(&path).map_err(|err| format!("cannot read stub {}: {err} (use --stub to point at it)", path.display()))?;
+        let image = fs::read(&path).map_err(|err| {
+            format!(
+                "cannot read stub {}: {err} (use --stub to point at it)",
+                path.display()
+            )
+        })?;
         let offset = slot::locate(&image).map_err(|err| format!("{}: {err}", path.display()))?;
         // A marker alone is not proof of a slot: this program carries the
         // marker bytes too, as a constant. A real stub's slot is empty, or
         // holds a valid alias (any alias also works as a stub).
         if let Err(slot::SlotError::Corrupt(why)) = slot::decode_at(&image, offset) {
-            return Err(format!("{}: not an aliasmux stub (marker found, but {why})", path.display()));
+            return Err(format!(
+                "{}: not an aliasmux stub (marker found, but {why})",
+                path.display()
+            ));
         }
         Ok(Stub { image, offset })
     }
@@ -429,7 +467,12 @@ fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     // Set the mode at creation so the file is never briefly non-executable.
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(path)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o755)
+        .open(path)?;
     file.write_all(bytes)
 }
 
@@ -452,17 +495,30 @@ enum Wrote {
 /// :param template: template source (already validated)
 /// :param replace_non_aliases: allow replacing a file that isn't an alias
 /// :return: what happened
-fn write_alias(stub: &Stub, dir: &Path, name: &str, template: &str, replace_non_aliases: bool) -> Result<Wrote, String> {
+fn write_alias(
+    stub: &Stub,
+    dir: &Path,
+    name: &str,
+    template: &str,
+    replace_non_aliases: bool,
+) -> Result<Wrote, String> {
     let target = dir.join(name);
     let bytes = stub.patched(name, template)?;
     // Decide based on what's there now. Only aliases are updated freely; the
     // tool, the stub, or any other program needs --replace-non-aliases.
-    let wrote = match existing(&target).map_err(|err| format!("cannot read {}: {err}", target.display()))? {
+    let wrote = match existing(&target)
+        .map_err(|err| format!("cannot read {}: {err}", target.display()))?
+    {
         Existing::Missing => Wrote::Created,
         Existing::Alias(old) if old == bytes => return Ok(Wrote::Unchanged),
         Existing::Alias(_) => Wrote::Updated,
         Existing::Other if replace_non_aliases => Wrote::Replaced,
-        Existing::Other => return Err(format!("{} exists and is not an aliasmux alias; use --replace-non-aliases to replace it", target.display())),
+        Existing::Other => {
+            return Err(format!(
+                "{} exists and is not an aliasmux alias; use --replace-non-aliases to replace it",
+                target.display()
+            ));
+        }
     };
     // Write to a temporary name, then rename: replacing a running executable
     // in place fails with ETXTBSY, and a half-written file must never be left
@@ -480,12 +536,15 @@ fn write_alias(stub: &Stub, dir: &Path, name: &str, template: &str, replace_non_
 /// :param dir: directory to scan
 /// :return: `(path, name, template)` per alias, sorted by name, then path
 fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
-    let listing = fs::read_dir(dir).map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
+    let listing =
+        fs::read_dir(dir).map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
     let mut found = Vec::new();
     for entry in listing.flatten() {
         let path = entry.path();
         // Regular files of plausible size only; see SCAN_LIMIT.
-        let plausible = entry.metadata().is_ok_and(|m| m.is_file() && m.len() >= slot::SIZE as u64 && m.len() <= SCAN_LIMIT);
+        let plausible = entry
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.len() >= slot::SIZE as u64 && m.len() <= SCAN_LIMIT);
         if !plausible {
             continue;
         }
@@ -542,7 +601,8 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
     if let Some(problem) = definition_problem(name, template) {
         return fail(&problem);
     }
-    let prepared = Stub::load(output.stub.as_deref()).and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
+    let prepared = Stub::load(output.stub.as_deref())
+        .and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
     let (stub, dir) = match prepared {
         Ok(prepared) => prepared,
         Err(err) => return fail(&err),
@@ -581,7 +641,8 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
     if let Some(missing) = names.iter().find(|n| !defined.contains(n.as_str())) {
         return fail(&format!("{} defines no alias `{missing}`", file.display()));
     }
-    let prepared = Stub::load(output.stub.as_deref()).and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
+    let prepared = Stub::load(output.stub.as_deref())
+        .and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
     let (stub, dir) = match prepared {
         Ok(prepared) => prepared,
         Err(err) => return fail(&err),
@@ -589,8 +650,17 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
 
     // Write the selected aliases, counting outcomes for the summary.
     let (mut written, mut unchanged, mut failures) = (0, 0, 0);
-    for entry in entries.iter().filter(|e| names.is_empty() || names.iter().any(|n| n == e.name)) {
-        match write_alias(&stub, &dir, entry.name, entry.template, output.replace_non_aliases) {
+    for entry in entries
+        .iter()
+        .filter(|e| names.is_empty() || names.iter().any(|n| n == e.name))
+    {
+        match write_alias(
+            &stub,
+            &dir,
+            entry.name,
+            entry.template,
+            output.replace_non_aliases,
+        ) {
             Ok(Wrote::Unchanged) => unchanged += 1,
             Ok(wrote) => {
                 report(wrote, &dir.join(entry.name));
@@ -616,7 +686,9 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
                             println!("removed {}", path.display());
                             removed += 1;
                         }
-                        Err(err) => failures += fail(&format!("cannot remove {}: {err}", path.display())),
+                        Err(err) => {
+                            failures += fail(&format!("cannot remove {}: {err}", path.display()))
+                        }
                     }
                 }
             }
@@ -694,7 +766,10 @@ fn read_definition(file: &Path) -> Result<(String, String), String> {
         Ok((name, template)) => Ok((name.to_owned(), template.to_owned())),
         // A marker with garbage after it is a false positive (this program
         // carries the marker bytes as a constant), not a damaged alias.
-        Err(slot::SlotError::Corrupt(why)) => Err(format!("{}: not an aliasmux alias (marker found, but {why})", file.display())),
+        Err(slot::SlotError::Corrupt(why)) => Err(format!(
+            "{}: not an aliasmux alias (marker found, but {why})",
+            file.display()
+        )),
         Err(err) => Err(format!("{}: {err}", file.display())),
     }
 }
@@ -706,7 +781,10 @@ fn read_definition(file: &Path) -> Result<(String, String), String> {
 fn quote(word: &OsStr) -> String {
     let text = word.to_string_lossy();
     // Arbitrary conservative set of characters that need no quoting anywhere.
-    let safe = !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    let safe = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
     if safe {
         text.into_owned()
     } else {
@@ -755,7 +833,10 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     };
     // Failed checks don't stop the explanation: the plan is shown, then what
     // would stop it from running.
-    let template::Preview { plan, failed_checks } = match parsed.preview(&name, args) {
+    let template::Preview {
+        plan,
+        failed_checks,
+    } = match parsed.preview(&name, args) {
         Ok(preview) => preview,
         Err(err) => {
             fail(&err.to_string());
