@@ -45,6 +45,17 @@ Template syntax:
                   are never empty, and may overlap the other references.
   {0}             the alias name
 
+  Checks and modifiers go after a colon, on any of the above but {0}:
+  {1:/}           basename                 dir/photo.jpg -> photo.jpg
+  {1://}          parent directory         dir/photo.jpg -> dir
+  {1:.}           without the extension    dir/photo.jpg -> dir/photo
+  {1:/.}          basename, no extension   dir/photo.jpg -> photo
+  {1:F} {1:D}     must be an existing file / directory
+  {1:E} {1:N}     must exist / must not exist yet
+  A check and a modifier combine, check first: {1:F/.}. Modifiers only edit
+  the text. Checks look at the file system, for every argument, before
+  anything runs, so a file an earlier step creates doesn't count yet.
+
   a | b           pipe
   a && b          run b only if a succeeded
   a || b          run b only if a failed
@@ -67,7 +78,8 @@ Examples:
   aliasmux new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
   aliasmux new cpto 'cp -t {-1} {@+}'
   aliasmux new incl 'gcc -I{@} -c {-1}'
-  aliasmux new relink 'rm -f {@} && symlink {-1} {@}'";
+  aliasmux new relink 'rm -f {@} && symlink {-1} {@}'
+  aliasmux new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'";
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///

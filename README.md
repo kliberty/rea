@@ -110,6 +110,10 @@ up stdin, so the template's own commands then see stdin at end of file.
 | `{@+}` | the same, but at least one is required |
 | `{A..B}` | a slice: from argument A up to but **not including** B, counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-1}` all but the last |
 | `{0}` | the alias name |
+| `{1:/}`, `{1://}` | basename, parent directory (`dir/photo.jpg` gives `photo.jpg`, `dir`) |
+| `{1:.}`, `{1:/.}` | without the extension, basename without it (`dir/photo`, `photo`) |
+| `{1:F}`, `{1:D}` | must be an existing file / directory |
+| `{1:E}`, `{1:N}` | must exist / must not exist yet |
 | `a \| b` | pipe |
 | `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
 | `'...'` | fully literal |
@@ -135,6 +139,16 @@ up stdin, so the template's own commands then see stdin at end of file.
   than with more arguments is rejected too: `{1..4} {-1}` takes exactly 4,
   since with 3 the slice would include the last argument. A template that no
   count satisfies is refused when the alias is created.
+- Checks and modifiers work on every reference but `{0}`, after a colon:
+  `{@:/.}`, `{-1:D}`, `{2..://}`. A check and a modifier combine as
+  `{1:F/.}`; the check applies to the argument itself. Modifiers are purely
+  textual, as in fd (`a.tar.gz` loses only `.gz`, `.bashrc` has no
+  extension, a bare name's parent is `.`). Checks follow symlinks, except `N`,
+  for which a dangling symlink counts as existing. They all run before
+  anything starts, and a failure exits 2 like a wrong argument count:
+  `{1:F} needs an existing file, but 'photos' is a directory`. That also
+  means a file an earlier step creates doesn't pass a later check (see
+  `TODO.md` for a flag to change that).
 - A single command with no references gets `{@}` appended, like a shell
   alias (`ll` above).
 - `$`, backticks, globs, redirection, `( )` and a lone `&` are errors rather

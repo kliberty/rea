@@ -491,3 +491,36 @@ fn closed_stdout_ends_quietly_instead_of_panicking() {
     assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
     assert_eq!(stderr(&out), "");
 }
+
+// ---------------------------------------------------------------------------
+// Path modifiers and file checks.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn modifiers_through_explain() {
+    let out = bin().args(["explain", "-t", "convert {1} {1://}/{1:/.}-thumb.jpg", "pics/a b.png"]).output().unwrap();
+    assert_eq!(stdout(&out), "   convert 'pics/a b.png' 'pics/a b-thumb.jpg'\n(single command: runs via exec, no supervisor process)\n");
+}
+
+#[test]
+fn failed_check_stops_everything_before_it_starts() {
+    // All checks run before the first command, so `touch` never runs here.
+    let dir = scratch("check-first");
+    let (made, missing) = (dir.join("made"), dir.join("missing"));
+    let out = eval("touch {1} && cat {2:F}", &[made.to_str().unwrap(), missing.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr(&out);
+    assert!(err.contains("{2:F} needs an existing file, but '") && err.contains("' does not exist"), "{err}");
+    assert!(!made.exists(), "the first command must not have run");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_rejects_bad_formats() {
+    let dir = scratch("bad-format");
+    let out = tool(&args!["new", "x", "cat {1:Q}", "-o", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("unknown format `:Q`"), "{}", stderr(&out));
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}
