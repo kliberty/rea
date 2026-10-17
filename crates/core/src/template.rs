@@ -24,6 +24,17 @@
 //!   and each other, `{@}` leaves out what they pass, and they are never empty.
 //! * `{0}`: the alias name
 //!
+//! Any reference except `{0}` may end in `:` and a format: a file check
+//! (`F` file, `D` directory, `E` exists, `N` doesn't exist), a path modifier
+//! (`/` basename, `//` parent, `.` without extension, `/.` basename without
+//! extension), or a check then a modifier: `{1:F/.}`. Modifiers only edit the
+//! text, like fd's `{/}` and friends; checks consult the file system, for
+//! every argument, during expansion (before anything runs).
+//!
+//! A check with no reference, `{:F}` / `{:D}` / `{:E}` / `{:N}`, at the very
+//! end of a word checks the whole word instead: `-outfile {1}.jpg{:N}`. When
+//! the word repeats (`{@}.jpg{:N}`), each copy is checked.
+//!
 //! A one-argument reference always yields exactly one argv entry. A word that
 //! contains a several-argument reference (`{@}`, `{@+}`, a slice) is repeated
 //! once per argument: `-I{@}` gives `-Ia -Ib`, and no entry at all when empty.
@@ -39,8 +50,11 @@
 //! then, not when the alias first runs.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
+use std::io;
+use std::path::Path;
 use std::iter::Peekable;
 use std::str::CharIndices;
 
@@ -142,17 +156,197 @@ impl fmt::Display for Multi {
     }
 }
 
+/// A file-system check on an argument, written as a capital letter after the
+/// colon: `{1:F}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Check {
+    /// `F`: exists and isn't a directory (symlinks followed). Looser than
+    /// `test -f` on purpose: see [`Check::run`].
+    File,
+    /// `D`: an existing directory (symlinks followed, like `test -d`).
+    Dir,
+    /// `E`: exists, either kind (like `test -e`).
+    Exists,
+    /// `N`: nothing exists there yet, not even a dangling symlink.
+    Absent,
+}
+
+impl Check {
+    /// The letter this check is written as.
+    ///
+    /// :return: the letter
+    fn letter(self) -> char {
+        match self {
+            Check::File => 'F',
+            Check::Dir => 'D',
+            Check::Exists => 'E',
+            Check::Absent => 'N',
+        }
+    }
+
+    /// What the check requires, for error messages.
+    ///
+    /// :return: e.g. "an existing file"
+    fn wants(self) -> &'static str {
+        match self {
+            Check::File => "an existing file",
+            Check::Dir => "an existing directory",
+            Check::Exists => "an existing path",
+            Check::Absent => "a path that doesn't exist yet",
+        }
+    }
+
+    /// Run the check on one argument.
+    ///
+    /// :param value: the argument, as a path
+    /// :return: `Ok`, or what was found instead, e.g. "is a directory"
+    fn run(self, value: &OsStr) -> Result<(), String> {
+        let path = Path::new(value);
+        // `metadata` follows symlinks, as `test -f` does; `N` looks at the
+        // link itself instead (see below).
+        let stat = if self == Check::Absent { fs::symlink_metadata(path) } else { fs::metadata(path) };
+        match (self, stat) {
+            // Deviation from `test -f`: anything but a directory passes, so
+            // /dev/null, /dev/stdin, FIFOs and bash's `<(...)` (/dev/fd/63, a
+            // pipe) work. `F` is there to catch a missing path or a directory
+            // passed by mistake; a command that truly needs a regular file
+            // reports that itself. A stricter letter could be added later
+            // without changing this one.
+            (Check::File, Ok(m)) if !m.is_dir() => Ok(()),
+            (Check::Dir, Ok(m)) if m.is_dir() => Ok(()),
+            (Check::Exists, Ok(_)) => Ok(()),
+            // Deviation from `test ! -e`: a dangling symlink counts as
+            // existing. `N` is for outputs, and writing through a dangling
+            // link would create a file somewhere else entirely.
+            (Check::Absent, Ok(_)) => Err("already exists".into()),
+            (Check::Absent, Err(err)) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            // Only a directory is left for F.
+            (Check::File, Ok(_)) => Err("is a directory".into()),
+            (Check::Dir, Ok(m)) if m.is_file() => Err("is a file".into()),
+            (Check::Dir, Ok(_)) => Err("is not a directory".into()),
+            (_, Err(err)) if err.kind() == io::ErrorKind::NotFound => Err("does not exist".into()),
+            // Permission problems and the like: say so rather than guess.
+            (_, Err(err)) => Err(format!("can't be checked ({err})")),
+        }
+    }
+}
+
+/// A textual edit of an argument as a path, written after the colon: `{1:/.}`.
+/// Purely textual (no file-system access), like fd's placeholders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Modifier {
+    /// `/`: the last component, `dir/photo.jpg` -> `photo.jpg`.
+    Basename,
+    /// `//`: everything before it, `dir/photo.jpg` -> `dir` (`.` for a bare name).
+    Parent,
+    /// `.`: without the last extension, `dir/photo.jpg` -> `dir/photo`.
+    NoExtension,
+    /// `/.`: basename without the last extension, `dir/photo.jpg` -> `photo`.
+    Stem,
+}
+
+impl Modifier {
+    /// How the modifier is written.
+    ///
+    /// :return: e.g. "/."
+    fn as_written(self) -> &'static str {
+        match self {
+            Modifier::Basename => "/",
+            Modifier::Parent => "//",
+            Modifier::NoExtension => ".",
+            Modifier::Stem => "/.",
+        }
+    }
+
+    /// Apply the modifier.
+    ///
+    /// Uses `Path`'s own component logic, so the edge cases follow it (and
+    /// match fd): `a.tar.gz` loses only `.gz`, `.bashrc` has no extension, and
+    /// a trailing slash is ignored. Where `Path` has no answer (the basename
+    /// of `/`), the value is left as it is rather than turned into nothing.
+    ///
+    /// :param value: the argument
+    /// :return: the edited value; `OsStr` throughout, so non-UTF-8 survives
+    fn apply(self, value: &OsStr) -> OsString {
+        let path = Path::new(value);
+        match self {
+            Modifier::Basename => path.file_name().unwrap_or(value).to_os_string(),
+            // A bare name's parent is the current directory, written `.`.
+            Modifier::Parent => match path.parent() {
+                Some(parent) if parent.as_os_str().is_empty() => OsString::from("."),
+                Some(parent) => parent.as_os_str().to_os_string(),
+                None => value.to_os_string(),
+            },
+            Modifier::NoExtension if path.extension().is_some() => path.with_extension("").into_os_string(),
+            Modifier::NoExtension => value.to_os_string(),
+            Modifier::Stem => path.file_stem().unwrap_or(value).to_os_string(),
+        }
+    }
+}
+
+/// The optional `:...` part of a reference: a check, a modifier, or both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Format {
+    /// Checked against the argument itself, before the modifier.
+    pub check: Option<Check>,
+    /// Applied to the argument's text.
+    pub modifier: Option<Modifier>,
+}
+
+impl Format {
+    /// The format as written, including the colon; empty if there is none.
+    ///
+    /// :return: e.g. ":F/."
+    fn suffix(self) -> String {
+        if self == Format::default() {
+            return String::new();
+        }
+        let check = self.check.map(Check::letter).map(String::from).unwrap_or_default();
+        format!(":{check}{}", self.modifier.map_or("", Modifier::as_written))
+    }
+
+    /// Check and edit one argument.
+    ///
+    /// A failed check is recorded rather than returned, and the text is
+    /// produced anyway, so `explain` can show the command and every failure
+    /// together.
+    ///
+    /// :param value: the argument
+    /// :param reference: the reference as written, for error messages
+    /// :param failed: where failed checks are recorded
+    /// :return: the text to substitute
+    fn render(self, value: &OsStr, reference: impl Fn() -> String, failed: &mut Failures) -> OsString {
+        if let Some(check) = self.check
+            && let Err(found) = check.run(value)
+        {
+            failed.record(ExpandError::CheckFailed { reference: reference(), wants: check.wants(), value: value.to_os_string(), found });
+        }
+        self.modifier.map_or_else(|| value.to_os_string(), |m| m.apply(value))
+    }
+}
+
+/// A reference as written, e.g. `{1:F}` or `{2..:/.}`, for messages.
+///
+/// :param plain: the reference without a format, braces included
+/// :param format: its format
+/// :return: the reference with the format inside the braces
+fn written(plain: &str, format: Format) -> String {
+    // `plain` always ends in `}`; the format goes just before it.
+    format!("{}{}}}", plain.strip_suffix('}').unwrap_or(plain), format.suffix())
+}
+
 /// One fragment of a word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     /// Literal text from the template.
     Lit(String),
-    /// One argument.
-    Arg(Index),
+    /// One argument, with an optional check and modifier.
+    Arg(Index, Format),
     /// `{0}`: the alias name.
     Name,
-    /// Several arguments; the word is repeated once per argument.
-    Multi(Multi),
+    /// Several arguments, each with the same optional check and modifier; the
+    /// word is repeated once per argument.
+    Multi(Multi, Format),
 }
 
 /// A word of a command after parsing.
@@ -164,6 +358,10 @@ pub enum Piece {
 pub struct Word {
     /// The pieces, concatenated in order.
     pub pieces: Vec<Piece>,
+    /// `{:F}` etc. at the end of the word: checks each finished copy.
+    pub check: Option<Check>,
+    /// The word as written, for error messages.
+    pub source: String,
 }
 
 /// One program invocation; the first word is the program.
@@ -209,11 +407,13 @@ impl Shape {
     /// :param r: the reference
     fn add(&mut self, r: Ref) {
         match r {
-            Ref::Arg(index) if !self.indexes.contains(&index) => self.indexes.push(index),
+            // Formats don't change which arguments are used, so they are
+            // ignored here: arity is the same with or without them.
+            Ref::Arg(index, _) if !self.indexes.contains(&index) => self.indexes.push(index),
             // `{@}` and `{@+}` are the same arguments; one `+` anywhere makes
             // at least one required, which is the safe reading.
-            Ref::Multi(Multi::Rest { at_least_one }) => self.rest = Some(self.rest.unwrap_or(false) || at_least_one),
-            Ref::Multi(Multi::Slice(start, end)) if !self.slices.contains(&(start, end)) => self.slices.push((start, end)),
+            Ref::Multi(Multi::Rest { at_least_one }, _) => self.rest = Some(self.rest.unwrap_or(false) || at_least_one),
+            Ref::Multi(Multi::Slice(start, end), _) if !self.slices.contains(&(start, end)) => self.slices.push((start, end)),
             _ => {}
         }
     }
@@ -360,12 +560,14 @@ impl fmt::Display for ParseError {
 /// An argument reference as written inside braces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ref {
-    /// `{N}` or `{-N}`
-    Arg(Index),
+    /// `{N}` or `{-N}`, possibly with a format
+    Arg(Index, Format),
     /// `{0}`
     Name,
-    /// `{@}`, `{@+}` or a slice
-    Multi(Multi),
+    /// `{@}`, `{@+}` or a slice, possibly with a format
+    Multi(Multi, Format),
+    /// `{:F}` etc.: a check on the whole word it ends
+    WordCheck(Check),
 }
 
 /// What the lexer produces: a word or an operator.
@@ -395,6 +597,10 @@ struct WordBuilder {
     literal: String,
     /// The several-argument reference in this word, if any (as its set).
     multi: Option<Multi>,
+    /// A word check, with the offset of its `{`.
+    check: Option<(Check, usize)>,
+    /// Whether anything came after the word check (which is an error).
+    after_check: bool,
 }
 
 impl WordBuilder {
@@ -403,13 +609,15 @@ impl WordBuilder {
     /// :param start: byte offset of the word's first character
     /// :return: the builder
     fn new(start: usize) -> Self {
-        WordBuilder { start, pieces: Vec::new(), literal: String::new(), multi: None }
+        WordBuilder { start, pieces: Vec::new(), literal: String::new(), multi: None, check: None, after_check: false }
     }
 
     /// Append one literal character.
     ///
     /// :param c: the character
     fn push_char(&mut self, c: char) {
+        // Text after a word check is reported when the word ends.
+        self.after_check |= self.check.is_some();
         self.literal.push(c);
     }
 
@@ -419,11 +627,23 @@ impl WordBuilder {
     /// :param offset: byte offset of its opening brace
     /// :return: an error if the word would mix two several-argument references
     fn push_ref(&mut self, r: Ref, offset: usize) -> Result<(), ParseError> {
+        // A word check must be last (see `finish`), so nothing may follow it,
+        // not even another check.
+        if let Some((check, at)) = self.check {
+            return Err(ParseError::new(at, format!("`{{:{}}}` must come at the very end of its word: it checks the whole word", check.letter())));
+        }
+        if let Ref::WordCheck(check) = r {
+            self.flush();
+            self.check = Some((check, offset));
+            return Ok(());
+        }
         // A word is repeated once per argument of its several-argument
         // reference. Repeating the same one twice is well defined ({@}={@}
         // gives a=a b=b), but two different ones would need a cross product or
         // a zip of unequal lengths, and neither is an obvious reading.
-        if let Ref::Multi(multi) = r {
+        // Formats don't matter here: `{@}` and `{@:/.}` are the same arguments,
+        // so `mv {@} {@://}/old-{@:/}` repeats in step.
+        if let Ref::Multi(multi, _) = r {
             if let Some(existing) = self.multi.filter(|m| *m != multi.set()) {
                 return Err(ParseError::new(
                     offset,
@@ -435,9 +655,11 @@ impl WordBuilder {
         // Close off pending literal text so ordering is preserved.
         self.flush();
         self.pieces.push(match r {
-            Ref::Arg(index) => Piece::Arg(index),
+            Ref::Arg(index, format) => Piece::Arg(index, format),
             Ref::Name => Piece::Name,
-            Ref::Multi(multi) => Piece::Multi(multi),
+            Ref::Multi(multi, format) => Piece::Multi(multi, format),
+            // Returned early above.
+            Ref::WordCheck(_) => unreachable!("word checks are not pieces"),
         });
         Ok(())
     }
@@ -452,10 +674,23 @@ impl WordBuilder {
 
     /// Finish the word.
     ///
+    /// :param source: the word as written
     /// :return: the word
-    fn finish(mut self) -> Word {
+    fn finish(mut self, source: &str) -> Result<Word, ParseError> {
         self.flush();
-        Word { pieces: self.pieces }
+        if let Some((check, at)) = self.check {
+            // Constraint on change: only at the end. Elsewhere it reads as
+            // belonging to a neighbouring reference (`{1}{:N}.jpg`), and a
+            // reference's own check is always about the argument, never the
+            // word (`{1:F}` means the same everywhere it appears).
+            if self.after_check {
+                return Err(ParseError::new(at, format!("`{{:{}}}` must come at the very end of its word: it checks the whole word", check.letter())));
+            }
+            if self.pieces.is_empty() {
+                return Err(ParseError::new(at, "a word check needs a word to check; put it at the end of one, like out.txt{:N}"));
+            }
+        }
+        Ok(Word { pieces: self.pieces, check: self.check.map(|(check, _)| check), source: source.to_owned() })
     }
 }
 
@@ -487,18 +722,90 @@ fn parse_index(text: &str, body: &str) -> Result<Index, String> {
 /// :param body: the text between `{` and `}`
 /// :return: the reference, or a message explaining why it is invalid
 fn parse_ref_body(body: &str) -> Result<Ref, String> {
+    // A format, if any, follows the first colon: `{1:F/.}`.
+    let Some((target, spec)) = body.split_once(':') else { return parse_target(body) };
+    // No reference before the colon: a check on the whole word.
+    if target.is_empty() {
+        return parse_word_check(spec, body);
+    }
+    let format = parse_format(spec, body)?;
+    match parse_target(target) {
+        Ok(Ref::Arg(index, _)) => Ok(Ref::Arg(index, format)),
+        Ok(Ref::Multi(multi, _)) => Ok(Ref::Multi(multi, format)),
+        // The alias name isn't a path the user supplied, so checking or
+        // editing it would only ever be a mistake.
+        Ok(Ref::Name) => Err(format!("`{{{body}}}`: {{0}} is the alias name and takes no checks or modifiers")),
+        // Unreachable: only parse_word_check makes these. Reported rather than
+        // panicking, since this runs on user input.
+        Ok(Ref::WordCheck(_)) => Err(format!("internal error parsing `{{{body}}}`")),
+        Err(message) => Err(message),
+    }
+}
+
+/// Parse a word check: exactly one check letter, no modifier.
+///
+/// :param spec: the text after the colon
+/// :param body: the whole reference body, for error messages
+/// :return: the word check
+fn parse_word_check(spec: &str, body: &str) -> Result<Ref, String> {
+    match spec {
+        "F" => Ok(Ref::WordCheck(Check::File)),
+        "D" => Ok(Ref::WordCheck(Check::Dir)),
+        "E" => Ok(Ref::WordCheck(Check::Exists)),
+        "N" => Ok(Ref::WordCheck(Check::Absent)),
+        // A word check only tests the finished word, so it has nothing to
+        // modify; modifiers belong on a reference.
+        _ => Err(format!("`{{{body}}}`: a check on a whole word is one of {{:F}}, {{:D}}, {{:E}} or {{:N}}; modifiers need a reference, like {{1:/.}}")),
+    }
+}
+
+/// Parse a format: an optional check letter, then an optional modifier.
+///
+/// :param spec: the text after the colon
+/// :param body: the whole reference body, for error messages
+/// :return: the format
+fn parse_format(spec: &str, body: &str) -> Result<Format, String> {
+    let expected = "expected a check (F, D, E or N), a modifier (/, //, . or /.), or a check then a modifier, like :F/.";
+    if spec.is_empty() {
+        return Err(format!("`{{{body}}}` has nothing after the `:`; {expected}"));
+    }
+    // At most one check, first. Arbitrary but simple: the four checks are
+    // mutually exclusive or redundant (F implies E), so one is always enough.
+    let (check, rest) = match spec.chars().next() {
+        Some('F') => (Some(Check::File), &spec[1..]),
+        Some('D') => (Some(Check::Dir), &spec[1..]),
+        Some('E') => (Some(Check::Exists), &spec[1..]),
+        Some('N') => (Some(Check::Absent), &spec[1..]),
+        _ => (None, spec),
+    };
+    let modifier = match rest {
+        "" => None,
+        "/" => Some(Modifier::Basename),
+        "//" => Some(Modifier::Parent),
+        "." => Some(Modifier::NoExtension),
+        "/." => Some(Modifier::Stem),
+        _ => return Err(format!("unknown format `:{spec}` in `{{{body}}}`; {expected}")),
+    };
+    Ok(Format { check, modifier })
+}
+
+/// Interpret a reference without its format.
+///
+/// :param body: the text between `{` and `}`, or before the `:`
+/// :return: the reference, or a message explaining why it is invalid
+fn parse_target(body: &str) -> Result<Ref, String> {
     match body {
         // `{}` is common in shell idioms (find -exec), so give it a targeted hint.
         "" => Err("`{}` is not an argument reference; quote it ('{}') to pass literal braces, e.g. for find -exec".into()),
-        "@" => Ok(Ref::Multi(Multi::Rest { at_least_one: false })),
-        "@+" => Ok(Ref::Multi(Multi::Rest { at_least_one: true })),
+        "@" => Ok(Ref::Multi(Multi::Rest { at_least_one: false }, Format::default())),
+        "@+" => Ok(Ref::Multi(Multi::Rest { at_least_one: true }, Format::default())),
         "0" => Ok(Ref::Name),
         // An open-ended slice in both directions has two spellings already
         // ({1..} and {@} when nothing else is used); a third adds nothing.
         ".." => Err("`{..}` is not a slice; write `{1..}` for every argument, or `{@}` for those nothing else uses".into()),
         _ => match body.split_once("..") {
             Some((start, end)) => parse_slice(start, end, body),
-            None => parse_index(body, body).map(Ref::Arg),
+            None => parse_index(body, body).map(|index| Ref::Arg(index, Format::default())),
         },
     }
 }
@@ -528,7 +835,7 @@ fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
     if always_empty {
         return Err(format!("`{{{body}}}` is always empty; a slice stops before its end, so {{2..4}} is the 2nd and 3rd"));
     }
-    Ok(Ref::Multi(Multi::Slice(start, end)))
+    Ok(Ref::Multi(Multi::Slice(start, end), Format::default()))
 }
 
 /// Read a reference whose opening brace has just been consumed.
@@ -558,12 +865,16 @@ fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, P
 ///
 /// :param word: the current builder, taken (left as `None`)
 /// :param tokens: the output list
-fn end_word(word: &mut Option<WordBuilder>, tokens: &mut Vec<Token>) {
+/// :param src: the template source
+/// :param end: byte offset just past the word
+/// :return: an error if the word is malformed
+fn end_word(word: &mut Option<WordBuilder>, tokens: &mut Vec<Token>, src: &str, end: usize) -> Result<(), ParseError> {
     // Nothing to do between words, e.g. at repeated whitespace.
     if let Some(builder) = word.take() {
         let offset = builder.start;
-        tokens.push(Token { kind: TokenKind::Word(builder.finish()), offset });
+        tokens.push(Token { kind: TokenKind::Word(builder.finish(&src[offset..end])?), offset });
     }
+    Ok(())
 }
 
 /// The lexer's output.
@@ -589,18 +900,18 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
     while let Some((offset, c)) = chars.next() {
         match c {
             // Unquoted whitespace separates words and nothing else.
-            c if c.is_whitespace() => end_word(&mut word, &mut tokens),
+            c if c.is_whitespace() => end_word(&mut word, &mut tokens, src, offset)?,
 
             // `|` or `||`: operators also end the current word, so `a|b` works.
             '|' => {
-                end_word(&mut word, &mut tokens);
+                end_word(&mut word, &mut tokens, src, offset)?;
                 let kind = if chars.next_if(|&(_, n)| n == '|').is_some() { TokenKind::Or } else { TokenKind::Pipe };
                 tokens.push(Token { kind, offset });
             }
 
             // Only `&&` exists; a lone `&` would mean "background" in a shell.
             '&' => {
-                end_word(&mut word, &mut tokens);
+                end_word(&mut word, &mut tokens, src, offset)?;
                 if chars.next_if(|&(_, n)| n == '&').is_none() {
                     return Err(ParseError::new(offset, "a lone `&` is not supported (no background jobs); did you mean `&&`?"));
                 }
@@ -609,7 +920,7 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
 
             // `;` sequences unconditionally.
             ';' => {
-                end_word(&mut word, &mut tokens);
+                end_word(&mut word, &mut tokens, src, offset)?;
                 tokens.push(Token { kind: TokenKind::Then, offset });
             }
 
@@ -646,7 +957,10 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                         Some((open, '{')) => {
                             let r = read_ref(&mut chars, open)?;
                             builder.push_ref(r, open)?;
-                            refs.push((r, open));
+                            // Word checks use no argument; leave them out.
+                            if !matches!(r, Ref::WordCheck(_)) {
+                                refs.push((r, open));
+                            }
                         }
                         // `$` and backticks expand inside double quotes in sh, so
                         // "$1" is the shell habit most likely to slip through;
@@ -673,7 +987,10 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             '{' => {
                 let r = read_ref(&mut chars, offset)?;
                 word.get_or_insert_with(|| WordBuilder::new(offset)).push_ref(r, offset)?;
-                refs.push((r, offset));
+                // Word checks use no argument; leave them out.
+                if !matches!(r, Ref::WordCheck(_)) {
+                    refs.push((r, offset));
+                }
             }
 
             // A stray `}` is almost always a typo like `{1}}`, so refuse it
@@ -701,7 +1018,7 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
         }
     }
     // The last word has no trailing separator to end it.
-    end_word(&mut word, &mut tokens);
+    end_word(&mut word, &mut tokens, src, src.len())?;
     Ok(Lexed { tokens, refs })
 }
 
@@ -794,8 +1111,8 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
         let used: Vec<(usize, usize)> = refs
             .iter()
             .filter_map(|&(r, offset)| match r {
-                Ref::Arg(Index::Front(k)) if !back => Some((k, offset)),
-                Ref::Arg(Index::Back(k)) if back => Some((k, offset)),
+                Ref::Arg(Index::Front(k), _) if !back => Some((k, offset)),
+                Ref::Arg(Index::Back(k), _) if back => Some((k, offset)),
                 _ => None,
             })
             .collect();
@@ -806,6 +1123,48 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
                 format!("`{{{sign}{highest}}}` is used but `{{{sign}{missing}}}` is not; every argument must be used, so number them without gaps (or cover the gap with a slice)"),
             ));
         }
+    }
+    Ok(())
+}
+
+/// Whether two checks can never both pass on the same path.
+///
+/// :param a: one check
+/// :param b: the other
+/// :return: the reason they can't, if they can't
+fn incompatible(a: Check, b: Check) -> Option<&'static str> {
+    use Check::*;
+    match (a, b) {
+        (File, Dir) | (Dir, File) => Some("an argument can't be both a file and a directory"),
+        (Absent, File | Dir | Exists) | (File | Dir | Exists, Absent) => Some("an argument can't both exist and not exist"),
+        _ => None,
+    }
+}
+
+/// Reject checks on the same reference that can never all pass, such as
+/// `{1:F}` and `{1:N}`.
+///
+/// Only references that always mean the same arguments are compared (the
+/// same `{N}`, the same `{-N}`, the same several-argument reference). Others
+/// may overlap only at some counts, like `{1}` and `{-1}`; those are left to
+/// fail when they run, rather than being refused for all counts.
+///
+/// :param refs: every reference with its offset
+/// :return: an error pointing at the second of a contradictory pair
+fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
+    // (which arguments, check, as written) for every checked reference so far.
+    let mut seen: Vec<(Result<Index, Multi>, Check, String)> = Vec::new();
+    for &(r, offset) in refs {
+        let (target, check, text) = match r {
+            Ref::Arg(index, format @ Format { check: Some(check), .. }) => (Ok(index), check, written(&index.to_string(), format)),
+            Ref::Multi(multi, format @ Format { check: Some(check), .. }) => (Err(multi.set()), check, written(&multi.to_string(), format)),
+            _ => continue,
+        };
+        let clash = seen.iter().find_map(|(t, c, first)| (*t == target).then(|| incompatible(*c, check).map(|why| (first, why))).flatten());
+        if let Some((first, why)) = clash {
+            return Err(ParseError::new(offset, format!("`{text}` contradicts `{first}`: {why}")));
+        }
+        seen.push((target, check, text));
     }
     Ok(())
 }
@@ -839,11 +1198,12 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
     if shape.slices.is_empty() {
         check_gaps(&refs)?;
     }
+    check_contradictions(&refs)?;
     let implicit_rest = refs.is_empty() && tail.is_empty() && head.stages.len() == 1;
     if implicit_rest {
         let rest = Multi::Rest { at_least_one: false };
-        head.stages[0].words.push(Word { pieces: vec![Piece::Multi(rest)] });
-        shape.add(Ref::Multi(rest));
+        head.stages[0].words.push(Word { pieces: vec![Piece::Multi(rest, Format::default())], check: None, source: "{@}".into() });
+        shape.add(Ref::Multi(rest, Format::default()));
     }
     let arity = compute_arity(&shape)?;
     Ok(Template { head, tail, implicit_rest, shape, arity })
@@ -1146,6 +1506,17 @@ pub enum ExpandError {
     WrongArgCount { arity: Arity, got: usize },
     /// A command expanded to no words at all (e.g. a bare `{@}` with no args).
     EmptyCommand,
+    /// A file check failed, e.g. `{1:F}` given a directory.
+    CheckFailed {
+        /// The reference as written, e.g. `{1:F}`.
+        reference: String,
+        /// What the check requires, e.g. "an existing file".
+        wants: &'static str,
+        /// The argument that failed it.
+        value: OsString,
+        /// What was found instead, e.g. "is a directory".
+        found: String,
+    },
 }
 
 impl fmt::Display for ExpandError {
@@ -1157,8 +1528,43 @@ impl fmt::Display for ExpandError {
         match self {
             ExpandError::WrongArgCount { arity, got } => write!(f, "expected {arity}, got {got}"),
             ExpandError::EmptyCommand => f.write_str("a command expanded to nothing (no program to run)"),
+            // The value is shown lossily: it's for a person to read, and the
+            // real bytes are what the check ran on.
+            ExpandError::CheckFailed { reference, wants, value, found } => {
+                write!(f, "{reference} needs {wants}, but '{}' {found}", value.to_string_lossy())
+            }
         }
     }
+}
+
+/// Failed checks found while expanding, in template order.
+#[derive(Debug, Default)]
+struct Failures(Vec<ExpandError>);
+
+impl Failures {
+    /// Record a failed check, once.
+    ///
+    /// The same check on the same argument can appear several times (`{1:F}`
+    /// twice); reporting it twice would add nothing.
+    ///
+    /// :param err: the failure
+    fn record(&mut self, err: ExpandError) {
+        if !self.0.contains(&err) {
+            self.0.push(err);
+        }
+    }
+}
+
+/// A plan together with the checks that failed while building it.
+///
+/// Only `explain` wants this: a real run stops at the first failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    /// The plan, as it would run if every check passed.
+    pub plan: Plan,
+    /// Every distinct failed check, in template order; each is a
+    /// [`ExpandError::CheckFailed`].
+    pub failed_checks: Vec<ExpandError>,
 }
 
 impl Template {
@@ -1182,19 +1588,43 @@ impl Template {
     /// :param args: runtime arguments, excluding the alias name
     /// :return: the plan to run
     pub fn expand(&self, name: &str, args: &[OsString]) -> Result<Plan, ExpandError> {
+        // Report only the first failed check, as before collecting them all;
+        // running the rest costs a few stat calls on an error path.
+        let Preview { plan, failed_checks } = self.preview(name, args)?;
+        match failed_checks.into_iter().next() {
+            Some(first) => Err(first),
+            None => Ok(plan),
+        }
+    }
+
+    /// Substitute runtime arguments, carrying on past failed checks.
+    ///
+    /// For `explain`: shows what would run and everything that would stop it.
+    /// A wrong argument count or an empty command is still an error, since
+    /// there is no plan to show.
+    ///
+    /// :param name: the alias name, for `{0}`
+    /// :param args: runtime arguments, excluding the alias name
+    /// :return: the plan and the checks it failed
+    pub fn preview(&self, name: &str, args: &[OsString]) -> Result<Preview, ExpandError> {
         // Check the count up front; an accepted count always has a layout.
         let wrong = || ExpandError::WrongArgCount { arity: self.arity.clone(), got: args.len() };
         if !self.arity.accepts(args.len()) {
             return Err(wrong());
         }
         let layout = layout(&self.shape, args.len()).map_err(|_| wrong())?;
-        // Expand each pipeline stage by stage.
-        let expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
-            p.stages.iter().map(|c| expand_command(c, &layout, name, args)).collect()
+        let mut failed = Failures::default();
+        // Expand each pipeline stage by stage, in template order so failures
+        // are listed in the order they appear.
+        let mut expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
+            p.stages.iter().map(|c| expand_command(c, &layout, name, args, &mut failed)).collect()
         };
         let head = expand_pipeline(&self.head)?;
-        let tail = self.tail.iter().map(|(op, p)| Ok((*op, expand_pipeline(p)?))).collect::<Result<_, _>>()?;
-        Ok(Plan { head, tail })
+        let mut tail = Vec::with_capacity(self.tail.len());
+        for (op, p) in &self.tail {
+            tail.push((*op, expand_pipeline(p)?));
+        }
+        Ok(Preview { plan: Plan { head, tail }, failed_checks: failed.0 })
     }
 }
 
@@ -1204,27 +1634,47 @@ impl Template {
 /// :param layout: where each reference lands for this argument count
 /// :param name: the alias name, for `{0}`
 /// :param args: runtime arguments; already checked against the arity
+/// :param failed: where failed checks are recorded
 /// :return: the argv
-fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsString]) -> Result<Argv, ExpandError> {
+fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsString], failed: &mut Failures) -> Result<Argv, ExpandError> {
     let mut argv = Vec::with_capacity(command.words.len());
     for word in &command.words {
         // A several-argument reference repeats the word once per argument it
         // stands for (the parser allows only one distinct one per word).
         let multi = word.pieces.iter().find_map(|p| match p {
-            Piece::Multi(m) => Some(*m),
+            Piece::Multi(m, _) => Some(*m),
             _ => None,
         });
         match multi {
-            None => argv.push(build_entry(word, layout, name, args, None)),
+            None => {
+                let entry = build_entry(word, layout, name, args, None, failed);
+                argv.push(check_word(word, entry, failed));
+            }
             Some(multi) => {
                 for position in layout.positions(multi) {
-                    argv.push(build_entry(word, layout, name, args, Some(position)));
+                    let entry = build_entry(word, layout, name, args, Some(position), failed);
+                    argv.push(check_word(word, entry, failed));
                 }
             }
         }
     }
     // Only possible when every word of the command repeated zero times.
     if argv.is_empty() { Err(ExpandError::EmptyCommand) } else { Ok(argv) }
+}
+
+/// Apply a word's own check (`{:N}` at its end) to one finished copy.
+///
+/// :param word: the word
+/// :param entry: one copy of it, fully expanded
+/// :param failed: where a failed check is recorded
+/// :return: the entry, unchanged whether or not the check passed
+fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
+    if let Some(check) = word.check
+        && let Err(found) = check.run(&entry)
+    {
+        failed.record(ExpandError::CheckFailed { reference: format!("the word {}", word.source), wants: check.wants(), value: entry.clone(), found });
+    }
+    entry
 }
 
 /// Build one argv entry from a word.
@@ -1234,16 +1684,22 @@ fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsStri
 /// :param name: the alias name, for `{0}`
 /// :param args: runtime arguments
 /// :param repeat: for a repeated word, the position this copy stands for
+/// :param failed: where failed checks are recorded
 /// :return: the entry, as OsString so non-UTF-8 filenames survive
-fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repeat: Option<usize>) -> OsString {
+fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repeat: Option<usize>, failed: &mut Failures) -> OsString {
     let mut entry = OsString::new();
     for piece in &word.pieces {
         match piece {
             Piece::Lit(text) => entry.push(text),
             Piece::Name => entry.push(name),
             // Positions are 1-based and in range: the layout checked them.
-            Piece::Arg(index) => entry.push(&args[layout.index[index] - 1]),
-            Piece::Multi(_) => entry.push(&args[repeat.expect("repeated words get a position") - 1]),
+            Piece::Arg(index, format) => {
+                entry.push(format.render(&args[layout.index[index] - 1], || written(&index.to_string(), *format), failed));
+            }
+            Piece::Multi(multi, format) => {
+                let value = &args[repeat.expect("repeated words get a position") - 1];
+                entry.push(format.render(value, || written(&multi.to_string(), *format), failed));
+            }
         }
     }
     entry
@@ -1541,6 +1997,195 @@ mod tests {
         let p = parse("ffmpeg -i {1} {1}.out").unwrap().expand("t", std::slice::from_ref(&raw)).unwrap();
         assert_eq!(p.head[0][2], raw);
         assert_eq!(p.head[0][3].as_bytes(), b"caf\xe9.mkv.out");
+    }
+
+    #[test]
+    fn path_modifiers() {
+        // The four modifiers on one value.
+        let out = argv("echo {1:/} {1://} {1:.} {1:/.}", &["dir/photo.jpg"]);
+        assert_eq!(out, os(&["echo", "photo.jpg", "dir", "dir/photo", "photo"]));
+        // Edge cases, as in fd: a bare name's parent is `.`, only the last
+        // extension goes, a dotfile has none, a trailing slash is ignored,
+        // and `/` has no basename or parent to give, so it stays itself.
+        assert_eq!(argv("echo {1://}", &["file"]), os(&["echo", "."]));
+        assert_eq!(argv("echo {1:.} {1:/.}", &["a.tar.gz"]), os(&["echo", "a.tar", "a.tar"]));
+        assert_eq!(argv("echo {1:.} {1:/.}", &[".bashrc"]), os(&["echo", ".bashrc", ".bashrc"]));
+        assert_eq!(argv("echo {1:/} {1://}", &["dir/sub/"]), os(&["echo", "sub", "dir"]));
+        assert_eq!(argv("echo {1:/} {1://}", &["/"]), os(&["echo", "/", "/"]));
+        // Modifiers only change text, so arity is unaffected.
+        assert_eq!(arity("cp {1:F} {2:N}"), "exactly 2 arguments");
+    }
+
+    #[test]
+    fn modifiers_on_several_argument_references() {
+        // Applied per item, and words still repeat as usual.
+        assert_eq!(argv("echo {@:/.}.png", &["a/x.jpg", "b/y.jpg"]), os(&["echo", "x.png", "y.png"]));
+        // One reference with different modifiers in a word stays in step.
+        assert_eq!(argv("echo {@://}/old-{@:/}", &["a/x", "b/y"]), os(&["echo", "a/old-x", "b/old-y"]));
+        // Slices and back indexes take formats too.
+        assert_eq!(argv("echo {1://} {2..:/} {-1:/.}", &["p/q", "r/s", "t/u.v"]), os(&["echo", "p", "s", "u.v", "u"]));
+    }
+
+    #[test]
+    fn modifiers_keep_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"dir/caf\xe9.mkv").to_os_string();
+        let p = parse("echo {1:/.}").unwrap().expand("t", std::slice::from_ref(&raw)).unwrap();
+        assert_eq!(p.head[0][1].as_bytes(), b"caf\xe9");
+    }
+
+    #[test]
+    fn format_syntax_errors() {
+        // Each case: source, and the byte offset the error must report.
+        let cases = [("echo {1:}", 5), ("echo {1:X}", 5), ("echo {1:FD}", 5), ("echo {1:/./}", 5), ("echo {:F}", 5), ("echo {0:/}", 5)];
+        for (src, offset) in cases {
+            let err = parse(src).expect_err(src);
+            assert_eq!(err.offset, Some(offset), "{src}: {}", err.message);
+        }
+    }
+
+    /// A fresh scratch directory for one test.
+    ///
+    /// :param tag: test-specific suffix, since tests run in parallel
+    /// :return: the directory
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aliasmux-core-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Expand a one-argument template, returning the error message if any.
+    ///
+    /// :param src: template source
+    /// :param arg: the argument
+    /// :return: `Ok(argv)` or the error as text
+    fn try_expand(src: &str, arg: &std::path::Path) -> Result<Argv, String> {
+        let t = parse(src).unwrap();
+        t.expand("t", &[arg.as_os_str().to_os_string()]).map(|p| p.head[0].clone()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn file_checks() {
+        let dir = scratch("checks");
+        let (file, sub, missing, dangling) = (dir.join("f.txt"), dir.join("d"), dir.join("nope"), dir.join("link"));
+        fs::write(&file, "x").unwrap();
+        fs::create_dir(&sub).unwrap();
+        std::os::unix::fs::symlink(dir.join("gone"), &dangling).unwrap();
+
+        // Passing checks substitute the value as usual.
+        assert!(try_expand("cat {1:F}", &file).is_ok());
+        assert!(try_expand("ls {1:D}", &sub).is_ok());
+        assert!(try_expand("ls {1:E}", &sub).is_ok());
+        assert!(try_expand("touch {1:N}", &missing).is_ok());
+        // Failing ones say what was wanted and what was found.
+        let wants = |src: &str, arg: &std::path::Path| try_expand(src, arg).unwrap_err();
+        assert!(wants("cat {1:F}", &sub).ends_with("d' is a directory"), "{}", wants("cat {1:F}", &sub));
+        assert!(wants("cat {1:F}", &missing).starts_with("{1:F} needs an existing file, but '"));
+        assert!(wants("cat {1:F}", &missing).ends_with("' does not exist"));
+        assert!(wants("ls {1:D}", &file).ends_with("' is a file"));
+        assert!(wants("ls {1:E}", &missing).ends_with("' does not exist"));
+        assert!(wants("touch {1:N}", &file).ends_with("' already exists"));
+        // A dangling symlink counts as existing for N (writing through it
+        // would create a file elsewhere), but not for F.
+        assert!(wants("touch {1:N}", &dangling).ends_with("' already exists"));
+        assert!(wants("cat {1:F}", &dangling).ends_with("' does not exist"));
+        // F means "not a directory": devices and pipes pass it, D still
+        // refuses them, and N sees that they exist.
+        let fifo = dir.join("fifo");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        for special in [std::path::Path::new("/dev/null"), &fifo] {
+            assert!(try_expand("cat {1:F}", special).is_ok(), "{}", special.display());
+            assert!(wants("ls {1:D}", special).ends_with("' is not a directory"));
+            assert!(wants("touch {1:N}", special).ends_with("' already exists"));
+        }
+        // The check sees the full path; the modifier applies afterwards.
+        assert_eq!(try_expand("echo {1:F/.}", &file).unwrap(), os(&["echo", "f"]));
+        // Several-argument references check every item and name themselves.
+        let t = parse("ls {@:D}").unwrap();
+        let err = t.expand("t", &[sub.clone().into_os_string(), file.clone().into_os_string()]).unwrap_err();
+        assert!(err.to_string().starts_with("{@:D} needs an existing directory"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn word_checks() {
+        let dir = scratch("word-checks");
+        let (input, output) = (dir.join("photo.png"), dir.join("photo.png.jpg"));
+        fs::write(&input, "x").unwrap();
+        let src = "magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && mv {1}.jpg {1}";
+        // Passes while the output doesn't exist; the check sees the whole word.
+        assert!(try_expand(src, &input).is_ok());
+        fs::write(&output, "old").unwrap();
+        let err = try_expand(src, &input).unwrap_err();
+        assert!(err.starts_with("the word {1}.jpg{:N} needs a path that doesn't exist yet, but '"), "{err}");
+        assert!(err.ends_with("photo.png.jpg' already exists"), "{err}");
+        // A repeated word is checked once per copy.
+        let t = parse("touch {@+}.jpg{:N}").unwrap();
+        let other = dir.join("other.png");
+        let err = t.expand("t", &[other.into_os_string(), input.clone().into_os_string()]).unwrap_err();
+        assert!(err.to_string().ends_with("photo.png.jpg' already exists"), "{err}");
+        // Literal words can be checked too, and keep the implicit {@}.
+        let t = parse("cat /no/such/config{:F}").unwrap();
+        assert!(t.implicit_rest);
+        assert!(t.expand("t", &[]).unwrap_err().to_string().ends_with("'/no/such/config' does not exist"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_collects_every_failed_check() {
+        let dir = scratch("preview");
+        let (input, output) = (dir.join("photo.png"), dir.join("photo.png.jpg"));
+        fs::write(&output, "old").unwrap();
+        // Two failures: the input is missing and the output exists. The
+        // repeated {1:F} is reported once.
+        let t = parse("magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && rm {1:F}").unwrap();
+        let preview = t.preview("t", &[input.clone().into_os_string()]).unwrap();
+        let messages: Vec<String> = preview.failed_checks.iter().map(ToString::to_string).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].starts_with("{1:F} needs an existing file"), "{messages:?}");
+        assert!(messages[1].starts_with("the word {1}.jpg{:N}"), "{messages:?}");
+        // The plan is complete regardless.
+        assert_eq!(preview.plan.tail.len(), 1);
+        assert_eq!(preview.plan.head[1][2], output.clone().into_os_string());
+        // expand reports only the first.
+        assert_eq!(t.expand("t", &[input.into_os_string()]).unwrap_err().to_string(), messages[0]);
+        // A wrong count is still an error: there's nothing to preview.
+        assert!(matches!(t.preview("t", &[]), Err(ExpandError::WrongArgCount { .. })));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn word_check_syntax_errors() {
+        // Each case: source, and the byte offset the error must report.
+        let cases = [
+            ("echo {1}{:N}.jpg", 8),
+            ("echo {:N}", 5),
+            ("echo a{:N}{:F}", 6),
+            ("echo a{:/.}", 6),
+            ("echo a{:FN}", 6),
+            ("echo a{:}", 6),
+        ];
+        for (src, offset) in cases {
+            let err = parse(src).expect_err(src);
+            assert_eq!(err.offset, Some(offset), "{src}: {}", err.message);
+        }
+        // A word check after a closing quote is still at the end.
+        assert!(parse("echo \"{1}.jpg\"{:N}").is_ok());
+    }
+
+    #[test]
+    fn contradictory_checks_are_refused() {
+        // The same argument can't be a file and absent, or a file and a directory.
+        let err = parse("magick {1:F} ppm: | cjpeg -outfile {1:N}.jpg").unwrap_err();
+        assert_eq!(err.offset, Some(35));
+        assert_eq!(err.message, "`{1:N}` contradicts `{1:F}`: an argument can't both exist and not exist");
+        assert!(parse("cp {@:F} {@:D}").unwrap_err().message.contains("both a file and a directory"));
+        // Compatible checks, or checks on different arguments, are fine.
+        assert!(parse("cat {1:F} {1:E}").is_ok());
+        assert!(parse("cp {1:F} {2:N}").is_ok());
+        // References that only sometimes overlap aren't refused for all counts.
+        assert!(parse("cp {1:F} {-1:N}").is_ok());
     }
 
     #[test]

@@ -477,6 +477,8 @@ fn template_syntax_is_in_the_long_help() {
     for args in [&["--help"][..], &["new", "--help"], &["eval", "--help"]] {
         let help = stdout(&bin().args(args).output().unwrap());
         assert!(help.contains("{A..B}") && help.contains("{@+}") && help.contains("up to but not including"), "{args:?}: {help}");
+        // Checks and modifiers, including the two combined.
+        assert!(help.contains("{1:/.}") && help.contains("{1:F/.}") && help.contains("{1:D//}"), "{args:?}: {help}");
     }
     assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
 }
@@ -490,4 +492,93 @@ fn closed_stdout_ends_quietly_instead_of_panicking() {
     let out = Command::new("sh").args(["-c", script, env!("CARGO_BIN_EXE_aliasmux")]).output().unwrap();
     assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
     assert_eq!(stderr(&out), "");
+}
+
+// ---------------------------------------------------------------------------
+// Path modifiers and file checks.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn modifiers_through_explain() {
+    let out = bin().args(["explain", "-t", "convert {1} {1://}/{1:/.}-thumb.jpg", "pics/a b.png"]).output().unwrap();
+    assert_eq!(stdout(&out), "   convert 'pics/a b.png' 'pics/a b-thumb.jpg'\n(single command: runs via exec, no supervisor process)\n");
+}
+
+#[test]
+fn failed_check_stops_everything_before_it_starts() {
+    // All checks run before the first command, so `touch` never runs here.
+    let dir = scratch("check-first");
+    let (made, missing) = (dir.join("made"), dir.join("missing"));
+    let out = eval("touch {1} && cat {2:F}", &[made.to_str().unwrap(), missing.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr(&out);
+    assert!(err.contains("{2:F} needs an existing file, but '") && err.contains("' does not exist"), "{err}");
+    assert!(!made.exists(), "the first command must not have run");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_rejects_bad_formats() {
+    let dir = scratch("bad-format");
+    let out = tool(&args!["new", "x", "cat {1:Q}", "-o", dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("unknown format `:Q`"), "{}", stderr(&out));
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn word_check_guards_an_output_before_anything_runs() {
+    // Like the convert-jpg alias: transform into {1}.out, then replace {1}.
+    let dir = scratch("word-check-run");
+    let file = dir.join("f.txt");
+    fs::write(&file, "hello\n").unwrap();
+    let template = "cat {1:F} | tr a-z A-Z | tee {1}.out{:N} && mv {1}.out {1}";
+    let first = eval(template, &[file.to_str().unwrap()]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "HELLO\n");
+    // With the output already there, nothing runs at all.
+    fs::write(dir.join("f.txt.out"), "keep").unwrap();
+    let second = eval(template, &[file.to_str().unwrap()]);
+    assert_eq!(second.status.code(), Some(2));
+    assert!(stderr(&second).contains("the word {1}.out{:N} needs a path that doesn't exist yet"), "{}", stderr(&second));
+    assert_eq!(fs::read_to_string(dir.join("f.txt.out")).unwrap(), "keep");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explain_shows_the_plan_despite_failed_checks() {
+    let dir = scratch("explain-checks");
+    let input = dir.join("photo.png");
+    fs::write(&input, "x").unwrap();
+    fs::write(dir.join("photo.png.jpg"), "old").unwrap();
+    let out = tool(&args![
+        OsStr::new("explain"),
+        OsStr::new("-t"),
+        OsStr::new("magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && mv {1}.jpg {2:D}"),
+        input.as_os_str(),
+        dir.join("missing").as_os_str()
+    ]);
+    // The whole plan is printed, then each failure, and the status is the
+    // alias's own for a failed check.
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout(&out).lines().count(), 3, "{}", stdout(&out));
+    let err = stderr(&out);
+    assert_eq!(err.lines().count(), 2, "{err}");
+    assert!(err.contains("would not run: the word {1}.jpg{:N} needs a path that doesn't exist yet"), "{err}");
+    assert!(err.contains("would not run: {2:D} needs an existing directory"), "{err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explain_exits_as_the_alias_would() {
+    // A wrong count and an invalid template are usage errors for the alias,
+    // so explain gives the same 2.
+    let few = bin().args(["explain", "-t", "cp {1} {2}", "a"]).output().unwrap();
+    assert_eq!(few.status.code(), Some(2), "{}", stderr(&few));
+    let invalid = bin().args(["explain", "-t", "echo $HOME"]).output().unwrap();
+    assert_eq!(invalid.status.code(), Some(2), "{}", stderr(&invalid));
+    // Something that isn't an alias at all is the tool's own error.
+    let missing = bin().args(["explain", "/no/such/alias"]).output().unwrap();
+    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
 }

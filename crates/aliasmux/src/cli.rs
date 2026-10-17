@@ -45,6 +45,24 @@ Template syntax:
                   are never empty, and may overlap the other references.
   {0}             the alias name
 
+  Checks and modifiers go after a colon, on any of the above but {0}:
+  {1:/}           basename                 dir/photo.jpg -> photo.jpg
+  {1://}          parent directory         dir/photo.jpg -> dir
+  {1:.}           without the extension    dir/photo.jpg -> dir/photo
+  {1:/.}          basename, no extension   dir/photo.jpg -> photo
+  {1:F} {1:D}     must be an existing file / directory; a file is anything
+                  but a directory, so /dev/null and <(...) pass
+  {1:E} {1:N}     must exist / must not exist yet
+  {1:F/.}         both, check first: dir/photo.jpg must be a file -> photo
+  {1:D//}         dir/sub must be a directory -> dir
+  The check is on the argument itself, before the modifier. Modifiers only
+  edit the text. Checks look at the file system, for every argument, before
+  anything runs, so a file an earlier step creates doesn't count yet.
+
+  {:F} {:D} {:E} {:N}  at the very end of a word, check the whole word:
+                  -outfile {1}.jpg{:N} checks photo.png.jpg, not photo.png.
+                  A repeated word ({@}.jpg{:N}) is checked once per copy.
+
   a | b           pipe
   a && b          run b only if a succeeded
   a || b          run b only if a failed
@@ -67,7 +85,9 @@ Examples:
   aliasmux new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
   aliasmux new cpto 'cp -t {-1} {@+}'
   aliasmux new incl 'gcc -I{@} -c {-1}'
-  aliasmux new relink 'rm -f {@} && symlink {-1} {@}'";
+  aliasmux new relink 'rm -f {@} && symlink {-1} {@}'
+  aliasmux new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'
+  aliasmux new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'";
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///
@@ -147,6 +167,10 @@ enum Cmd {
         files: Vec<PathBuf>,
     },
     /// Print the commands an alias would run, without running them.
+    ///
+    /// File checks that would fail are listed after the commands. The exit
+    /// status is the alias's own: 2 for a failed check, a wrong argument
+    /// count or an invalid template.
     Explain {
         /// Treat TARGET as template source rather than an alias executable.
         #[arg(short = 't', long = "template")]
@@ -702,6 +726,8 @@ fn format_argv(argv: &template::Argv) -> String {
 
 /// `explain`: print the expanded plan, one process per line.
 ///
+/// Failed file checks are listed after the plan rather than replacing it.
+///
 /// :param is_template: whether `target` is template source rather than a file
 /// :param target: alias executable, or template source
 /// :param args: arguments to expand with
@@ -717,15 +743,24 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
             Err(err) => return fail(&err),
         }
     };
-    // Report errors exactly as a real run would, but without exiting the
-    // process from inside a helper.
+    // Report errors exactly as a real run would, status included, but without
+    // exiting the process from inside a helper. A file that isn't an alias
+    // (above) is the tool's own error, so it keeps status 1.
     let parsed = match template::parse(&source) {
         Ok(parsed) => parsed,
-        Err(err) => return fail(&format!("invalid template: {}", err.render(&source))),
+        Err(err) => {
+            fail(&format!("invalid template: {}", err.render(&source)));
+            return aliasmux_core::USAGE_ERROR;
+        }
     };
-    let plan = match parsed.expand(&name, args) {
-        Ok(plan) => plan,
-        Err(err) => return fail(&err.to_string()),
+    // Failed checks don't stop the explanation: the plan is shown, then what
+    // would stop it from running.
+    let template::Preview { plan, failed_checks } = match parsed.preview(&name, args) {
+        Ok(preview) => preview,
+        Err(err) => {
+            fail(&err.to_string());
+            return aliasmux_core::USAGE_ERROR;
+        }
     };
     // Stages are indented under their pipeline so the structure reads at a glance.
     let print_pipeline = |prefix: &str, stages: &[template::Argv]| {
@@ -748,5 +783,13 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     if plan.as_simple().is_some() {
         println!("(single command: runs via exec, no supervisor process)");
     }
-    0
+    if failed_checks.is_empty() {
+        return 0;
+    }
+    // Same wording as the alias's own error, and the same status, so
+    // `explain` stays a faithful dry run for scripts.
+    for err in &failed_checks {
+        eprintln!("{SELF_NAME}: would not run: {err}");
+    }
+    aliasmux_core::USAGE_ERROR
 }

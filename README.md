@@ -94,6 +94,11 @@ aliasmux eval TEMPLATE ARGS          # run a template directly, to try it out
 aliasmux eval - ARGS                 # the same, with the template read from stdin
 ```
 
+`explain` shows the commands even when a file check would stop them, and
+lists those checks after them, so debugging an alias never means changing
+files to get past its checks. Its exit status is the alias's own: 2 for a
+failed check, a wrong argument count or an invalid template.
+
 `eval -` reads one line from stdin as the template, which saves a layer of
 shell quoting (`aliasmux eval - < template.txt`, or a heredoc). Reading it uses
 up stdin, so the template's own commands then see stdin at end of file.
@@ -110,6 +115,11 @@ up stdin, so the template's own commands then see stdin at end of file.
 | `{@+}` | the same, but at least one is required |
 | `{A..B}` | a slice: from argument A up to but **not including** B, counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-1}` all but the last |
 | `{0}` | the alias name |
+| `{1:/}`, `{1://}` | basename, parent directory (`dir/photo.jpg` gives `photo.jpg`, `dir`) |
+| `{1:.}`, `{1:/.}` | without the extension, basename without it (`dir/photo`, `photo`) |
+| `{1:F}`, `{1:D}` | must be an existing file (anything but a directory) / directory |
+| `{1:E}`, `{1:N}` | must exist / must not exist yet |
+| `{:F}`, `{:D}`, `{:E}`, `{:N}` | at the very end of a word, the same checks on the whole word: `{1}.jpg{:N}` |
 | `a \| b` | pipe |
 | `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
 | `'...'` | fully literal |
@@ -135,6 +145,25 @@ up stdin, so the template's own commands then see stdin at end of file.
   than with more arguments is rejected too: `{1..4} {-1}` takes exactly 4,
   since with 3 the slice would include the last argument. A template that no
   count satisfies is refused when the alias is created.
+- Checks and modifiers work on every reference but `{0}`, after a colon:
+  `{@:/.}`, `{-1:D}`, `{2..://}`. A check and a modifier combine as
+  `{1:F/.}`; the check applies to the argument itself. Modifiers are purely
+  textual, as in fd (`a.tar.gz` loses only `.gz`, `.bashrc` has no
+  extension, a bare name's parent is `.`). Checks follow symlinks, except `N`,
+  for which a dangling symlink counts as existing. `F` is looser than
+  `test -f`: it passes anything that isn't a directory, so `/dev/null`,
+  named pipes and bash's `<(...)` work as files. They all run before
+  anything starts, and a failure exits 2 like a wrong argument count:
+  `{1:F} needs an existing file, but 'photos' is a directory`. That also
+  means a file an earlier step creates doesn't pass a later check (see
+  `TODO.md` for a flag to change that).
+- A reference's check is always about the argument, wherever it appears:
+  `{1:N}.jpg` checks argument 1, not `….jpg`. To check the path a word
+  builds, end the word with a check of its own: `-outfile {1}.jpg{:N}`. It
+  checks the whole word, literal text included, so it belongs on words that
+  are just a path (`--out={1}{:N}` would check `--out=…`). Checks on the same
+  argument that can never both pass, like `{1:F}` and `{1:N}`, are refused
+  when the alias is created.
 - A single command with no references gets `{@}` appended, like a shell
   alias (`ll` above).
 - `$`, backticks, globs, redirection, `( )` and a lone `&` are errors rather
