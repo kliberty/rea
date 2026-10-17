@@ -15,8 +15,19 @@ earlier step creates is visible to a later check: `touch {1} && cat {1:F}`.
 "Per pipeline" rather than per stage, because the stages of one pipeline all
 start together.
 
-There was at least one other use in mind for creation-time flags; it has
-been forgotten for now, so add it here when it comes back.
+Second use: `--pipefail=MODE`, choosing how a pipeline's exit status is
+decided (`pipeline_outcome` in `crates/core/src/run.rs`):
+
+| Mode | Pipeline status | `false \| true` | `yes \| head -1` |
+|---|---|---|---|
+| `aliasmux` (default, today's rule) | rightmost failing stage, but an upstream stage killed by SIGPIPE counts as success | 1 | 0 |
+| `bash` | rightmost failing stage, SIGPIPE included: exactly `set -o pipefail` | 1 | 141 |
+| `last` | the last stage alone, as in plain sh | 0 | 0 |
+
+One flag with a value rather than several booleans, because the modes are
+mutually exclusive. `bash` is for matching scripts that already rely on
+pipefail. `last` gives up the protection that keeps `flif270` from `mv`-ing a
+broken file over the original, so the help should say so.
 
 Things to settle:
 
