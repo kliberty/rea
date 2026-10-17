@@ -526,3 +526,22 @@ fn new_rejects_bad_formats() {
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn word_check_guards_an_output_before_anything_runs() {
+    // Like the convert-jpg alias: transform into {1}.out, then replace {1}.
+    let dir = scratch("word-check-run");
+    let file = dir.join("f.txt");
+    fs::write(&file, "hello\n").unwrap();
+    let template = "cat {1:F} | tr a-z A-Z | tee {1}.out{:N} && mv {1}.out {1}";
+    let first = eval(template, &[file.to_str().unwrap()]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "HELLO\n");
+    // With the output already there, nothing runs at all.
+    fs::write(dir.join("f.txt.out"), "keep").unwrap();
+    let second = eval(template, &[file.to_str().unwrap()]);
+    assert_eq!(second.status.code(), Some(2));
+    assert!(stderr(&second).contains("the word {1}.out{:N} needs a path that doesn't exist yet"), "{}", stderr(&second));
+    assert_eq!(fs::read_to_string(dir.join("f.txt.out")).unwrap(), "keep");
+    let _ = fs::remove_dir_all(&dir);
+}

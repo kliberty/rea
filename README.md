@@ -114,6 +114,7 @@ up stdin, so the template's own commands then see stdin at end of file.
 | `{1:.}`, `{1:/.}` | without the extension, basename without it (`dir/photo`, `photo`) |
 | `{1:F}`, `{1:D}` | must be an existing file / directory |
 | `{1:E}`, `{1:N}` | must exist / must not exist yet |
+| `{:F}`, `{:D}`, `{:E}`, `{:N}` | at the very end of a word, the same checks on the whole word: `{1}.jpg{:N}` |
 | `a \| b` | pipe |
 | `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
 | `'...'` | fully literal |
@@ -149,6 +150,13 @@ up stdin, so the template's own commands then see stdin at end of file.
   `{1:F} needs an existing file, but 'photos' is a directory`. That also
   means a file an earlier step creates doesn't pass a later check (see
   `TODO.md` for a flag to change that).
+- A reference's check is always about the argument, wherever it appears:
+  `{1:N}.jpg` checks argument 1, not `….jpg`. To check the path a word
+  builds, end the word with a check of its own: `-outfile {1}.jpg{:N}`. It
+  checks the whole word, literal text included, so it belongs on words that
+  are just a path (`--out={1}{:N}` would check `--out=…`). Checks on the same
+  argument that can never both pass, like `{1:F}` and `{1:N}`, are refused
+  when the alias is created.
 - A single command with no references gets `{@}` appended, like a shell
   alias (`ll` above).
 - `$`, backticks, globs, redirection, `( )` and a lone `&` are errors rather

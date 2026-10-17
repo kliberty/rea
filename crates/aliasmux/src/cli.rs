@@ -58,6 +58,10 @@ Template syntax:
   edit the text. Checks look at the file system, for every argument, before
   anything runs, so a file an earlier step creates doesn't count yet.
 
+  {:F} {:D} {:E} {:N}  at the very end of a word, check the whole word:
+                  -outfile {1}.jpg{:N} checks photo.png.jpg, not photo.png.
+                  A repeated word ({@}.jpg{:N}) is checked once per copy.
+
   a | b           pipe
   a && b          run b only if a succeeded
   a || b          run b only if a failed
