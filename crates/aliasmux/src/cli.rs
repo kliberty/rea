@@ -167,8 +167,9 @@ enum Cmd {
     },
     /// Print the commands an alias would run, without running them.
     ///
-    /// File checks that would fail are listed after the commands, and the
-    /// exit status is then 2, as the alias's own would be.
+    /// File checks that would fail are listed after the commands. The exit
+    /// status is the alias's own: 2 for a failed check, a wrong argument
+    /// count or an invalid template.
     Explain {
         /// Treat TARGET as template source rather than an alias executable.
         #[arg(short = 't', long = "template")]
@@ -741,17 +742,24 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
             Err(err) => return fail(&err),
         }
     };
-    // Report errors exactly as a real run would, but without exiting the
-    // process from inside a helper.
+    // Report errors exactly as a real run would, status included, but without
+    // exiting the process from inside a helper. A file that isn't an alias
+    // (above) is the tool's own error, so it keeps status 1.
     let parsed = match template::parse(&source) {
         Ok(parsed) => parsed,
-        Err(err) => return fail(&format!("invalid template: {}", err.render(&source))),
+        Err(err) => {
+            fail(&format!("invalid template: {}", err.render(&source)));
+            return aliasmux_core::USAGE_ERROR;
+        }
     };
     // Failed checks don't stop the explanation: the plan is shown, then what
     // would stop it from running.
     let template::Preview { plan, failed_checks } = match parsed.preview(&name, args) {
         Ok(preview) => preview,
-        Err(err) => return fail(&err.to_string()),
+        Err(err) => {
+            fail(&err.to_string());
+            return aliasmux_core::USAGE_ERROR;
+        }
     };
     // Stages are indented under their pipeline so the structure reads at a glance.
     let print_pipeline = |prefix: &str, stages: &[template::Argv]| {

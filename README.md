@@ -95,8 +95,9 @@ aliasmux eval - ARGS                 # the same, with the template read from std
 ```
 
 `explain` shows the commands even when a file check would stop them, and
-lists those checks after them (exit status 2, as the alias would give), so
-debugging an alias never means changing files to get past its checks.
+lists those checks after them, so debugging an alias never means changing
+files to get past its checks. Its exit status is the alias's own: 2 for a
+failed check, a wrong argument count or an invalid template.
 
 `eval -` reads one line from stdin as the template, which saves a layer of
 shell quoting (`aliasmux eval - < template.txt`, or a heredoc). Reading it uses

@@ -569,3 +569,16 @@ fn explain_shows_the_plan_despite_failed_checks() {
     assert!(err.contains("would not run: {2:D} needs an existing directory"), "{err}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn explain_exits_as_the_alias_would() {
+    // A wrong count and an invalid template are usage errors for the alias,
+    // so explain gives the same 2.
+    let few = bin().args(["explain", "-t", "cp {1} {2}", "a"]).output().unwrap();
+    assert_eq!(few.status.code(), Some(2), "{}", stderr(&few));
+    let invalid = bin().args(["explain", "-t", "echo $HOME"]).output().unwrap();
+    assert_eq!(invalid.status.code(), Some(2), "{}", stderr(&invalid));
+    // Something that isn't an alias at all is the tool's own error.
+    let missing = bin().args(["explain", "/no/such/alias"]).output().unwrap();
+    assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
+}
