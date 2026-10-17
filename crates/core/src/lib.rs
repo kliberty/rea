@@ -17,10 +17,8 @@ pub const USAGE_ERROR: i32 = 2;
 
 /// Parse, expand and run one template.
 ///
-/// :param name: alias name, used as the prefix of every error message
-/// :param source: the template source
-/// :param args: runtime arguments, excluding the alias name
-/// :return: never; exits with the alias's outcome
+/// `name` is the alias name, used as the prefix of every error message; `args`
+/// excludes it. Never returns: exits with the alias's outcome.
 pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
     // Templates are validated when an alias is created, so this only fails
     // for ad-hoc templates (`aliasmux eval`) or a damaged stub.
