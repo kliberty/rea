@@ -166,6 +166,9 @@ enum Cmd {
         files: Vec<PathBuf>,
     },
     /// Print the commands an alias would run, without running them.
+    ///
+    /// File checks that would fail are listed after the commands, and the
+    /// exit status is then 2, as the alias's own would be.
     Explain {
         /// Treat TARGET as template source rather than an alias executable.
         #[arg(short = 't', long = "template")]
@@ -721,6 +724,8 @@ fn format_argv(argv: &template::Argv) -> String {
 
 /// `explain`: print the expanded plan, one process per line.
 ///
+/// Failed file checks are listed after the plan rather than replacing it.
+///
 /// :param is_template: whether `target` is template source rather than a file
 /// :param target: alias executable, or template source
 /// :param args: arguments to expand with
@@ -742,8 +747,10 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
         Ok(parsed) => parsed,
         Err(err) => return fail(&format!("invalid template: {}", err.render(&source))),
     };
-    let plan = match parsed.expand(&name, args) {
-        Ok(plan) => plan,
+    // Failed checks don't stop the explanation: the plan is shown, then what
+    // would stop it from running.
+    let template::Preview { plan, failed_checks } = match parsed.preview(&name, args) {
+        Ok(preview) => preview,
         Err(err) => return fail(&err.to_string()),
     };
     // Stages are indented under their pipeline so the structure reads at a glance.
@@ -767,5 +774,13 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     if plan.as_simple().is_some() {
         println!("(single command: runs via exec, no supervisor process)");
     }
-    0
+    if failed_checks.is_empty() {
+        return 0;
+    }
+    // Same wording as the alias's own error, and the same status, so
+    // `explain` stays a faithful dry run for scripts.
+    for err in &failed_checks {
+        eprintln!("{SELF_NAME}: would not run: {err}");
+    }
+    aliasmux_core::USAGE_ERROR
 }

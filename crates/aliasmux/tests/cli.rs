@@ -545,3 +545,27 @@ fn word_check_guards_an_output_before_anything_runs() {
     assert_eq!(fs::read_to_string(dir.join("f.txt.out")).unwrap(), "keep");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn explain_shows_the_plan_despite_failed_checks() {
+    let dir = scratch("explain-checks");
+    let input = dir.join("photo.png");
+    fs::write(&input, "x").unwrap();
+    fs::write(dir.join("photo.png.jpg"), "old").unwrap();
+    let out = tool(&args![
+        OsStr::new("explain"),
+        OsStr::new("-t"),
+        OsStr::new("magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && mv {1}.jpg {2:D}"),
+        input.as_os_str(),
+        dir.join("missing").as_os_str()
+    ]);
+    // The whole plan is printed, then each failure, and the status is the
+    // alias's own for a failed check.
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout(&out).lines().count(), 3, "{}", stdout(&out));
+    let err = stderr(&out);
+    assert_eq!(err.lines().count(), 2, "{err}");
+    assert!(err.contains("would not run: the word {1}.jpg{:N} needs a path that doesn't exist yet"), "{err}");
+    assert!(err.contains("would not run: {2:D} needs an existing directory"), "{err}");
+    let _ = fs::remove_dir_all(&dir);
+}

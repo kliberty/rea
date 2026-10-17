@@ -94,6 +94,10 @@ aliasmux eval TEMPLATE ARGS          # run a template directly, to try it out
 aliasmux eval - ARGS                 # the same, with the template read from stdin
 ```
 
+`explain` shows the commands even when a file check would stop them, and
+lists those checks after them (exit status 2, as the alias would give), so
+debugging an alias never means changing files to get past its checks.
+
 `eval -` reads one line from stdin as the template, which saves a layer of
 shell quoting (`aliasmux eval - < template.txt`, or a heredoc). Reading it uses
 up stdin, so the template's own commands then see stdin at end of file.

@@ -300,19 +300,21 @@ impl Format {
 
     /// Check and edit one argument.
     ///
+    /// A failed check is recorded rather than returned, and the text is
+    /// produced anyway, so `explain` can show the command and every failure
+    /// together.
+    ///
     /// :param value: the argument
     /// :param reference: the reference as written, for error messages
+    /// :param failed: where failed checks are recorded
     /// :return: the text to substitute
-    fn render(self, value: &OsStr, reference: impl Fn() -> String) -> Result<OsString, ExpandError> {
-        if let Some(check) = self.check {
-            check.run(value).map_err(|found| ExpandError::CheckFailed {
-                reference: reference(),
-                wants: check.wants(),
-                value: value.to_os_string(),
-                found,
-            })?;
+    fn render(self, value: &OsStr, reference: impl Fn() -> String, failed: &mut Failures) -> OsString {
+        if let Some(check) = self.check
+            && let Err(found) = check.run(value)
+        {
+            failed.record(ExpandError::CheckFailed { reference: reference(), wants: check.wants(), value: value.to_os_string(), found });
         }
-        Ok(self.modifier.map_or_else(|| value.to_os_string(), |m| m.apply(value)))
+        self.modifier.map_or_else(|| value.to_os_string(), |m| m.apply(value))
     }
 }
 
@@ -1528,6 +1530,36 @@ impl fmt::Display for ExpandError {
     }
 }
 
+/// Failed checks found while expanding, in template order.
+#[derive(Debug, Default)]
+struct Failures(Vec<ExpandError>);
+
+impl Failures {
+    /// Record a failed check, once.
+    ///
+    /// The same check on the same argument can appear several times (`{1:F}`
+    /// twice); reporting it twice would add nothing.
+    ///
+    /// :param err: the failure
+    fn record(&mut self, err: ExpandError) {
+        if !self.0.contains(&err) {
+            self.0.push(err);
+        }
+    }
+}
+
+/// A plan together with the checks that failed while building it.
+///
+/// Only `explain` wants this: a real run stops at the first failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    /// The plan, as it would run if every check passed.
+    pub plan: Plan,
+    /// Every distinct failed check, in template order; each is a
+    /// [`ExpandError::CheckFailed`].
+    pub failed_checks: Vec<ExpandError>,
+}
+
 impl Template {
     /// True when the template is one command with no pipes or operators.
     ///
@@ -1549,19 +1581,43 @@ impl Template {
     /// :param args: runtime arguments, excluding the alias name
     /// :return: the plan to run
     pub fn expand(&self, name: &str, args: &[OsString]) -> Result<Plan, ExpandError> {
+        // Report only the first failed check, as before collecting them all;
+        // running the rest costs a few stat calls on an error path.
+        let Preview { plan, failed_checks } = self.preview(name, args)?;
+        match failed_checks.into_iter().next() {
+            Some(first) => Err(first),
+            None => Ok(plan),
+        }
+    }
+
+    /// Substitute runtime arguments, carrying on past failed checks.
+    ///
+    /// For `explain`: shows what would run and everything that would stop it.
+    /// A wrong argument count or an empty command is still an error, since
+    /// there is no plan to show.
+    ///
+    /// :param name: the alias name, for `{0}`
+    /// :param args: runtime arguments, excluding the alias name
+    /// :return: the plan and the checks it failed
+    pub fn preview(&self, name: &str, args: &[OsString]) -> Result<Preview, ExpandError> {
         // Check the count up front; an accepted count always has a layout.
         let wrong = || ExpandError::WrongArgCount { arity: self.arity.clone(), got: args.len() };
         if !self.arity.accepts(args.len()) {
             return Err(wrong());
         }
         let layout = layout(&self.shape, args.len()).map_err(|_| wrong())?;
-        // Expand each pipeline stage by stage.
-        let expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
-            p.stages.iter().map(|c| expand_command(c, &layout, name, args)).collect()
+        let mut failed = Failures::default();
+        // Expand each pipeline stage by stage, in template order so failures
+        // are listed in the order they appear.
+        let mut expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
+            p.stages.iter().map(|c| expand_command(c, &layout, name, args, &mut failed)).collect()
         };
         let head = expand_pipeline(&self.head)?;
-        let tail = self.tail.iter().map(|(op, p)| Ok((*op, expand_pipeline(p)?))).collect::<Result<_, _>>()?;
-        Ok(Plan { head, tail })
+        let mut tail = Vec::with_capacity(self.tail.len());
+        for (op, p) in &self.tail {
+            tail.push((*op, expand_pipeline(p)?));
+        }
+        Ok(Preview { plan: Plan { head, tail }, failed_checks: failed.0 })
     }
 }
 
@@ -1571,8 +1627,9 @@ impl Template {
 /// :param layout: where each reference lands for this argument count
 /// :param name: the alias name, for `{0}`
 /// :param args: runtime arguments; already checked against the arity
+/// :param failed: where failed checks are recorded
 /// :return: the argv
-fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsString]) -> Result<Argv, ExpandError> {
+fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsString], failed: &mut Failures) -> Result<Argv, ExpandError> {
     let mut argv = Vec::with_capacity(command.words.len());
     for word in &command.words {
         // A several-argument reference repeats the word once per argument it
@@ -1582,10 +1639,14 @@ fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsStri
             _ => None,
         });
         match multi {
-            None => argv.push(check_word(word, build_entry(word, layout, name, args, None)?)?),
+            None => {
+                let entry = build_entry(word, layout, name, args, None, failed);
+                argv.push(check_word(word, entry, failed));
+            }
             Some(multi) => {
                 for position in layout.positions(multi) {
-                    argv.push(check_word(word, build_entry(word, layout, name, args, Some(position))?)?);
+                    let entry = build_entry(word, layout, name, args, Some(position), failed);
+                    argv.push(check_word(word, entry, failed));
                 }
             }
         }
@@ -1598,13 +1659,15 @@ fn expand_command(command: &Command, layout: &Layout, name: &str, args: &[OsStri
 ///
 /// :param word: the word
 /// :param entry: one copy of it, fully expanded
-/// :return: the entry, if the check passes or there is none
-fn check_word(word: &Word, entry: OsString) -> Result<OsString, ExpandError> {
-    let Some(check) = word.check else { return Ok(entry) };
-    match check.run(&entry) {
-        Ok(()) => Ok(entry),
-        Err(found) => Err(ExpandError::CheckFailed { reference: format!("the word {}", word.source), wants: check.wants(), value: entry, found }),
+/// :param failed: where a failed check is recorded
+/// :return: the entry, unchanged whether or not the check passed
+fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
+    if let Some(check) = word.check
+        && let Err(found) = check.run(&entry)
+    {
+        failed.record(ExpandError::CheckFailed { reference: format!("the word {}", word.source), wants: check.wants(), value: entry.clone(), found });
     }
+    entry
 }
 
 /// Build one argv entry from a word.
@@ -1614,9 +1677,9 @@ fn check_word(word: &Word, entry: OsString) -> Result<OsString, ExpandError> {
 /// :param name: the alias name, for `{0}`
 /// :param args: runtime arguments
 /// :param repeat: for a repeated word, the position this copy stands for
-/// :return: the entry, as OsString so non-UTF-8 filenames survive, or the
-///     first file check that failed
-fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repeat: Option<usize>) -> Result<OsString, ExpandError> {
+/// :param failed: where failed checks are recorded
+/// :return: the entry, as OsString so non-UTF-8 filenames survive
+fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repeat: Option<usize>, failed: &mut Failures) -> OsString {
     let mut entry = OsString::new();
     for piece in &word.pieces {
         match piece {
@@ -1624,15 +1687,15 @@ fn build_entry(word: &Word, layout: &Layout, name: &str, args: &[OsString], repe
             Piece::Name => entry.push(name),
             // Positions are 1-based and in range: the layout checked them.
             Piece::Arg(index, format) => {
-                entry.push(format.render(&args[layout.index[index] - 1], || written(&index.to_string(), *format))?);
+                entry.push(format.render(&args[layout.index[index] - 1], || written(&index.to_string(), *format), failed));
             }
             Piece::Multi(multi, format) => {
                 let value = &args[repeat.expect("repeated words get a position") - 1];
-                entry.push(format.render(value, || written(&multi.to_string(), *format))?);
+                entry.push(format.render(value, || written(&multi.to_string(), *format), failed));
             }
         }
     }
-    Ok(entry)
+    entry
 }
 
 #[cfg(test)]
@@ -2050,6 +2113,29 @@ mod tests {
         let t = parse("cat /no/such/config{:F}").unwrap();
         assert!(t.implicit_rest);
         assert!(t.expand("t", &[]).unwrap_err().to_string().ends_with("'/no/such/config' does not exist"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_collects_every_failed_check() {
+        let dir = scratch("preview");
+        let (input, output) = (dir.join("photo.png"), dir.join("photo.png.jpg"));
+        fs::write(&output, "old").unwrap();
+        // Two failures: the input is missing and the output exists. The
+        // repeated {1:F} is reported once.
+        let t = parse("magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && rm {1:F}").unwrap();
+        let preview = t.preview("t", &[input.clone().into_os_string()]).unwrap();
+        let messages: Vec<String> = preview.failed_checks.iter().map(ToString::to_string).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].starts_with("{1:F} needs an existing file"), "{messages:?}");
+        assert!(messages[1].starts_with("the word {1}.jpg{:N}"), "{messages:?}");
+        // The plan is complete regardless.
+        assert_eq!(preview.plan.tail.len(), 1);
+        assert_eq!(preview.plan.head[1][2], output.clone().into_os_string());
+        // expand reports only the first.
+        assert_eq!(t.expand("t", &[input.into_os_string()]).unwrap_err().to_string(), messages[0]);
+        // A wrong count is still an error: there's nothing to preview.
+        assert!(matches!(t.preview("t", &[]), Err(ExpandError::WrongArgCount { .. })));
         let _ = fs::remove_dir_all(&dir);
     }
 
