@@ -50,7 +50,8 @@ Template syntax:
   {1://}          parent directory         dir/photo.jpg -> dir
   {1:.}           without the extension    dir/photo.jpg -> dir/photo
   {1:/.}          basename, no extension   dir/photo.jpg -> photo
-  {1:F} {1:D}     must be an existing file / directory
+  {1:F} {1:D}     must be an existing file / directory; a file is anything
+                  but a directory, so /dev/null and <(...) pass
   {1:E} {1:N}     must exist / must not exist yet
   {1:F/.}         both, check first: dir/photo.jpg must be a file -> photo
   {1:D//}         dir/sub must be a directory -> dir

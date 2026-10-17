@@ -117,7 +117,7 @@ up stdin, so the template's own commands then see stdin at end of file.
 | `{0}` | the alias name |
 | `{1:/}`, `{1://}` | basename, parent directory (`dir/photo.jpg` gives `photo.jpg`, `dir`) |
 | `{1:.}`, `{1:/.}` | without the extension, basename without it (`dir/photo`, `photo`) |
-| `{1:F}`, `{1:D}` | must be an existing file / directory |
+| `{1:F}`, `{1:D}` | must be an existing file (anything but a directory) / directory |
 | `{1:E}`, `{1:N}` | must exist / must not exist yet |
 | `{:F}`, `{:D}`, `{:E}`, `{:N}` | at the very end of a word, the same checks on the whole word: `{1}.jpg{:N}` |
 | `a \| b` | pipe |
@@ -150,7 +150,9 @@ up stdin, so the template's own commands then see stdin at end of file.
   `{1:F/.}`; the check applies to the argument itself. Modifiers are purely
   textual, as in fd (`a.tar.gz` loses only `.gz`, `.bashrc` has no
   extension, a bare name's parent is `.`). Checks follow symlinks, except `N`,
-  for which a dangling symlink counts as existing. They all run before
+  for which a dangling symlink counts as existing. `F` is looser than
+  `test -f`: it passes anything that isn't a directory, so `/dev/null`,
+  named pipes and bash's `<(...)` work as files. They all run before
   anything starts, and a failure exits 2 like a wrong argument count:
   `{1:F} needs an existing file, but 'photos' is a directory`. That also
   means a file an earlier step creates doesn't pass a later check (see

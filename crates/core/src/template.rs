@@ -160,7 +160,8 @@ impl fmt::Display for Multi {
 /// colon: `{1:F}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Check {
-    /// `F`: an existing regular file (symlinks followed, like `test -f`).
+    /// `F`: exists and isn't a directory (symlinks followed). Looser than
+    /// `test -f` on purpose: see [`Check::run`].
     File,
     /// `D`: an existing directory (symlinks followed, like `test -d`).
     Dir,
@@ -205,7 +206,13 @@ impl Check {
         // link itself instead (see below).
         let stat = if self == Check::Absent { fs::symlink_metadata(path) } else { fs::metadata(path) };
         match (self, stat) {
-            (Check::File, Ok(m)) if m.is_file() => Ok(()),
+            // Deviation from `test -f`: anything but a directory passes, so
+            // /dev/null, /dev/stdin, FIFOs and bash's `<(...)` (/dev/fd/63, a
+            // pipe) work. `F` is there to catch a missing path or a directory
+            // passed by mistake; a command that truly needs a regular file
+            // reports that itself. A stricter letter could be added later
+            // without changing this one.
+            (Check::File, Ok(m)) if !m.is_dir() => Ok(()),
             (Check::Dir, Ok(m)) if m.is_dir() => Ok(()),
             (Check::Exists, Ok(_)) => Ok(()),
             // Deviation from `test ! -e`: a dangling symlink counts as
@@ -213,8 +220,8 @@ impl Check {
             // link would create a file somewhere else entirely.
             (Check::Absent, Ok(_)) => Err("already exists".into()),
             (Check::Absent, Err(err)) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-            (Check::File, Ok(m)) if m.is_dir() => Err("is a directory".into()),
-            (Check::File, Ok(_)) => Err("is not a regular file".into()),
+            // Only a directory is left for F.
+            (Check::File, Ok(_)) => Err("is a directory".into()),
             (Check::Dir, Ok(m)) if m.is_file() => Err("is a file".into()),
             (Check::Dir, Ok(_)) => Err("is not a directory".into()),
             (_, Err(err)) if err.kind() == io::ErrorKind::NotFound => Err("does not exist".into()),
@@ -2083,6 +2090,15 @@ mod tests {
         // would create a file elsewhere), but not for F.
         assert!(wants("touch {1:N}", &dangling).ends_with("' already exists"));
         assert!(wants("cat {1:F}", &dangling).ends_with("' does not exist"));
+        // F means "not a directory": devices and pipes pass it, D still
+        // refuses them, and N sees that they exist.
+        let fifo = dir.join("fifo");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        for special in [std::path::Path::new("/dev/null"), &fifo] {
+            assert!(try_expand("cat {1:F}", special).is_ok(), "{}", special.display());
+            assert!(wants("ls {1:D}", special).ends_with("' is not a directory"));
+            assert!(wants("touch {1:N}", special).ends_with("' already exists"));
+        }
         // The check sees the full path; the modifier applies afterwards.
         assert_eq!(try_expand("echo {1:F/.}", &file).unwrap(), os(&["echo", "f"]));
         // Several-argument references check every item and name themselves.
