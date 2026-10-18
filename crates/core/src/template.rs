@@ -1132,7 +1132,7 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             '$' => {
                 return Err(ParseError::new(
                     offset,
-                    "`$` is not expanded here; use `{1}`, `{2}`, ... for arguments or `{$NAME}` for environment variables, or quote it ('$') to pass it literally",
+                    "`$` is not expanded here; use `{1}`, `{2}`, ... for arguments or `{$NAME}` for environment variables, or write `\\$` (or quote it) to pass it literally",
                 ));
             }
 
@@ -2856,6 +2856,7 @@ mod tests {
                 "{src}"
             );
         }
+        assert!(parse("echo $HOME").unwrap_err().message.contains("write `\\$` (or quote it)"));
         assert!(parse("echo {$_A1}").is_ok());
     }
 
