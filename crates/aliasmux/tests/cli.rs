@@ -10,18 +10,12 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-/// The binary under test.
-///
-/// :return: a command for it
+/// A command for the binary under test.
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_aliasmux"))
 }
 
-/// Run an ad-hoc template.
-///
-/// :param template: template source
-/// :param args: arguments for it
-/// :return: the captured output
+/// Run an ad-hoc template and capture its output.
 fn eval(template: &str, args: &[&str]) -> Output {
     bin()
         .arg("eval")
@@ -31,26 +25,19 @@ fn eval(template: &str, args: &[&str]) -> Output {
         .expect("binary runs")
 }
 
-/// Stdout as a string.
-///
-/// :param out: captured output
-/// :return: stdout, lossily decoded
+/// Stdout as a string, lossily decoded.
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Stderr as a string.
-///
-/// :param out: captured output
-/// :return: stderr, lossily decoded
+/// Stderr as a string, lossily decoded.
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 /// A fresh, empty scratch directory unique to one test.
 ///
-/// :param tag: test-specific suffix; tests run in parallel, so it must differ
-/// :return: the directory path
+/// Tests run in parallel, so each must pass a different `tag`.
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("aliasmux-test-{}-{tag}", std::process::id()));
     // Leftovers from an aborted run with the same pid are possible; start clean.
@@ -186,9 +173,8 @@ fn death_by_signal_is_propagated() {
     assert_eq!(out.status.signal(), Some(libc_sigterm()));
 }
 
-/// SIGTERM's number, without a libc dev-dependency just for one constant.
-///
-/// :return: 15, which is SIGTERM on every Linux architecture
+/// SIGTERM's number (15 on every Linux architecture), without a libc
+/// dev-dependency just for one constant.
 fn libc_sigterm() -> i32 {
     15
 }
@@ -244,10 +230,7 @@ fn default_sigint_still_reaches_children() {
 // this package into the same directory).
 // ---------------------------------------------------------------------------
 
-/// Run `aliasmux` with arguments.
-///
-/// :param args: the arguments
-/// :return: the captured output
+/// Run `aliasmux` with arguments and capture its output.
 fn tool(args: &[&OsStr]) -> Output {
     bin().args(args).output().expect("binary runs")
 }
@@ -527,11 +510,7 @@ fn explain_reads_an_alias_executable() {
 // `eval -`: the template read from stdin.
 // ---------------------------------------------------------------------------
 
-/// Run `aliasmux eval - ARGS...` with `input` on stdin.
-///
-/// :param input: bytes to feed on stdin
-/// :param args: arguments for the template
-/// :return: the captured output
+/// Run `aliasmux eval - ARGS...` with `input` on stdin and capture its output.
 fn eval_stdin(input: &[u8], args: &[&str]) -> Output {
     use std::io::Write;
     use std::process::Stdio;

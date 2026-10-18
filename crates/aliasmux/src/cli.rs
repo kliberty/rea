@@ -195,9 +195,7 @@ enum Cmd {
     },
 }
 
-/// Entry point.
-///
-/// :return: never; exits with the command's status
+/// Entry point. Never returns: exits with the subcommand's status.
 pub fn main() -> ! {
     // `eval` replaces the process or exits itself; the rest return a status.
     let status = match Cli::parse().command {
@@ -225,10 +223,7 @@ pub fn main() -> ! {
     std::process::exit(status);
 }
 
-/// Print an error and return the failure status.
-///
-/// :param message: what went wrong
-/// :return: exit status 1
+/// Print an error and return exit status 1.
 fn fail(message: &str) -> i32 {
     eprintln!("{SELF_NAME}: {message}");
     1
@@ -240,9 +235,8 @@ fn fail(message: &str) -> i32 {
 
 /// Check one alias definition completely, as creation requires.
 ///
-/// :param name: alias name
-/// :param template: template source
-/// :return: an explanation of the first problem, or `None` if it is valid
+/// Returns an explanation of the first problem, or `None` if the definition is
+/// valid.
 fn definition_problem(name: &str, template: &str) -> Option<String> {
     // Same name rules as the alias file, so both routes accept the same names.
     if let Some(problem) = aliasfile::name_problem(name) {
@@ -262,9 +256,8 @@ fn definition_problem(name: &str, template: &str) -> Option<String> {
 
 /// Read and fully validate an alias file.
 ///
-/// :param path: the alias file
-/// :param source: [out] holds the file's contents, which the entries borrow
-/// :return: the entries, or every problem found, formatted as `path:line: ...`
+/// `source` receives the file's contents, which the returned entries borrow. On
+/// failure, returns every problem found, formatted as `path:line: ...`.
 fn load_alias_file<'a>(
     path: &Path,
     source: &'a mut String,
@@ -294,10 +287,7 @@ fn load_alias_file<'a>(
     }
 }
 
-/// Report every problem from [`load_alias_file`].
-///
-/// :param problems: the messages
-/// :return: exit status 1
+/// Report every problem from [`load_alias_file`] and return exit status 1.
 fn fail_all(problems: &[String]) -> i32 {
     for problem in problems {
         fail(problem);
@@ -307,9 +297,7 @@ fn fail_all(problems: &[String]) -> i32 {
 
 /// `eval`: run a template, from the argument or (with `-`) from stdin.
 ///
-/// :param template: template source, or `-` for stdin
-/// :param args: arguments for the template
-/// :return: never; runs the template or exits with an error
+/// Never returns: it runs the template, or exits with an error.
 fn eval(template: String, args: &[OsString]) -> ! {
     // `-` follows the usual "read stdin" convention. A template that really is
     // a lone `-` would only try to run a program named `-`, so nothing useful
@@ -325,12 +313,10 @@ fn eval(template: String, args: &[OsString]) -> ! {
     run_alias(SELF_NAME, &source, args)
 }
 
-/// Read a one-line template from stdin.
+/// Read a one-line template from stdin, without its trailing line ending.
 ///
 /// The whole input is read (it must end before the template can run), so the
 /// template's commands inherit a stdin that is already at end of file.
-///
-/// :return: the template, without its trailing line ending
 fn template_from_stdin() -> Result<String, String> {
     let mut text = String::new();
     io::stdin()
@@ -364,8 +350,6 @@ fn template_from_stdin() -> Result<String, String> {
 /// /proc/self/exe), so a symlinked `aliasmux` still finds the stub beside the
 /// real file. Defaulting DIR here is an arbitrary convenience: installing the
 /// tool in ~/.local/bin makes new aliases land there too.
-///
-/// :return: the directory
 fn own_dir() -> Result<PathBuf, String> {
     let exe =
         std::env::current_exe().map_err(|err| format!("cannot locate this program: {err}"))?;
@@ -383,10 +367,8 @@ struct Stub {
 }
 
 impl Stub {
-    /// Load and check a stub.
-    ///
-    /// :param path: the stub, or `None` for the default next to this program
-    /// :return: the stub
+    /// Load and check a stub: the one at `path`, or by default the one next to
+    /// this program.
     fn load(path: Option<&Path>) -> Result<Stub, String> {
         let path = match path {
             Some(path) => path.to_path_buf(),
@@ -411,11 +393,9 @@ impl Stub {
         Ok(Stub { image, offset })
     }
 
-    /// The bytes of an alias made from this stub.
+    /// The complete executable for an alias made from this stub.
     ///
-    /// :param name: alias name (already validated)
-    /// :param template: template source (already validated)
-    /// :return: the complete executable
+    /// `name` and `template` must already be validated.
     fn patched(&self, name: &str, template: &str) -> Result<Vec<u8>, String> {
         let mut copy = self.image.clone();
         copy[self.offset..self.offset + slot::SIZE].copy_from_slice(&slot::encode(name, template)?);
@@ -423,11 +403,10 @@ impl Stub {
     }
 }
 
-/// Read the alias definition out of a file, if it is an alias.
+/// Read the alias definition, `(name, template)`, out of a file's contents.
 ///
-/// :param image: the file's contents
-/// :return: `(name, template)` for an alias; `None` for anything else, including
-///     the bare stub (empty slot) and the tool itself (marker but no slot)
+/// Returns `None` for anything that isn't an alias, including the bare stub
+/// (empty slot) and the tool itself (marker but no slot).
 fn alias_in(image: &[u8]) -> Option<(&str, &str)> {
     let offset = slot::locate(image).ok()?;
     slot::decode_at(image, offset).ok()
@@ -444,9 +423,6 @@ enum Existing {
 }
 
 /// Classify the file at a path.
-///
-/// :param path: the path
-/// :return: what is there
 fn existing(path: &Path) -> io::Result<Existing> {
     match fs::read(path) {
         Ok(bytes) if alias_in(&bytes).is_some() => Ok(Existing::Alias(bytes)),
@@ -458,11 +434,8 @@ fn existing(path: &Path) -> io::Result<Existing> {
     }
 }
 
-/// Write bytes as a new executable file (mode 0755).
-///
-/// :param path: destination; replaced if it exists
-/// :param bytes: contents
-/// :return: I/O result
+/// Write bytes as a new executable file (mode 0755), replacing any file at
+/// `path`.
 fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -489,12 +462,8 @@ enum Wrote {
 
 /// Write one alias into a directory, refusing to clobber unrelated files.
 ///
-/// :param stub: the stub to copy
-/// :param dir: target directory (must exist)
-/// :param name: alias name (already validated)
-/// :param template: template source (already validated)
-/// :param replace_non_aliases: allow replacing a file that isn't an alias
-/// :return: what happened
+/// `dir` must exist, and `name` and `template` must already be validated. A file
+/// that isn't an alias is replaced only with `replace_non_aliases`.
 fn write_alias(
     stub: &Stub,
     dir: &Path,
@@ -531,10 +500,8 @@ fn write_alias(
     Ok(wrote)
 }
 
-/// Every alias in a directory.
-///
-/// :param dir: directory to scan
-/// :return: `(path, name, template)` per alias, sorted by name, then path
+/// Every alias in a directory, as `(path, name, template)`, sorted by name,
+/// then path.
 fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
     let listing =
         fs::read_dir(dir).map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
@@ -558,10 +525,7 @@ fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
     Ok(found)
 }
 
-/// Resolve DIR and create it if needed.
-///
-/// :param dir: the --out option
-/// :return: the directory
+/// Resolve DIR (the `--out` option) and create it if needed.
 fn output_dir(dir: Option<&Path>) -> Result<PathBuf, String> {
     let dir = match dir {
         Some(dir) => dir.to_path_buf(),
@@ -572,9 +536,6 @@ fn output_dir(dir: Option<&Path>) -> Result<PathBuf, String> {
 }
 
 /// Print what happened to one alias.
-///
-/// :param wrote: the outcome
-/// :param path: the alias's path
 fn report(wrote: Wrote, path: &Path) {
     // Unchanged aliases are only counted, so a large rerun stays quiet.
     let verb = match wrote {
@@ -590,12 +551,7 @@ fn report(wrote: Wrote, path: &Path) {
 // Commands
 // ---------------------------------------------------------------------------
 
-/// `new`: create or update one alias.
-///
-/// :param name: alias name
-/// :param template: template source
-/// :param output: --out, --stub, --replace-non-aliases
-/// :return: exit status
+/// `new`: create or update one alias. Returns the exit status.
 fn new(name: &str, template: &str, output: &Output) -> i32 {
     // Validate before touching the filesystem at all.
     if let Some(problem) = definition_problem(name, template) {
@@ -624,11 +580,8 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
 
 /// `patch`: create or update the aliases of an alias file.
 ///
-/// :param file: the alias file
-/// :param names: subset to write, or empty for all
-/// :param output: --out, --stub, --replace-non-aliases
-/// :param prune: remove aliases the file no longer defines
-/// :return: exit status
+/// `names` limits it to those aliases; empty means all of them. With `prune`,
+/// aliases the file no longer defines are removed. Returns the exit status.
 fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
     // Validate the whole file first, so a typo anywhere writes nothing.
     let mut source = String::new();
@@ -700,10 +653,7 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
     if failures > 0 { 1 } else { 0 }
 }
 
-/// `check`: validate an alias file.
-///
-/// :param file: the alias file
-/// :return: exit status
+/// `check`: validate an alias file. Returns the exit status.
 fn check(file: &Path) -> i32 {
     let mut source = String::new();
     match load_alias_file(file, &mut source) {
@@ -715,10 +665,8 @@ fn check(file: &Path) -> i32 {
     }
 }
 
-/// `list`: print a directory's aliases as an alias file.
-///
-/// :param dir: directory, or `None` for the default
-/// :return: exit status
+/// `list`: print a directory's aliases as an alias file. Returns the exit
+/// status.
 fn list(dir: Option<&Path>) -> i32 {
     let dir = match dir.map_or_else(own_dir, |d| Ok(d.to_path_buf())) {
         Ok(dir) => dir,
@@ -741,8 +689,7 @@ fn list(dir: Option<&Path>) -> i32 {
 
 /// `inspect`: print the definitions stored in alias executables.
 ///
-/// :param files: the executables
-/// :return: exit status; 1 if any file is not an alias
+/// Returns the exit status: 1 if any file is not an alias.
 fn inspect(files: &[PathBuf]) -> i32 {
     let mut failures = 0;
     for file in files {
@@ -754,10 +701,8 @@ fn inspect(files: &[PathBuf]) -> i32 {
     if failures > 0 { 1 } else { 0 }
 }
 
-/// Read the definition stored in an alias executable.
-///
-/// :param file: the executable
-/// :return: `(name, template)`, or why the file is not an alias
+/// Read the definition stored in an alias executable, as `(name, template)`,
+/// or say why the file is not an alias.
 fn read_definition(file: &Path) -> Result<(String, String), String> {
     let image = fs::read(file).map_err(|err| format!("cannot read {}: {err}", file.display()))?;
     // Same lookup the stub does at run time, but on the file instead of memory.
@@ -776,8 +721,7 @@ fn read_definition(file: &Path) -> Result<(String, String), String> {
 
 /// Quote a word so the printed command can be pasted into sh (or a template).
 ///
-/// :param word: one argv entry
-/// :return: the word, single-quoted unless it is plainly safe
+/// The word is single-quoted unless it is plainly safe.
 fn quote(word: &OsStr) -> String {
     let text = word.to_string_lossy();
     // Arbitrary conservative set of characters that need no quoting anywhere.
@@ -794,22 +738,16 @@ fn quote(word: &OsStr) -> String {
     }
 }
 
-/// Format one argv as a pasteable line.
-///
-/// :param argv: the argv
-/// :return: space-joined quoted words
+/// Format one argv as a pasteable line of quoted words.
 fn format_argv(argv: &template::Argv) -> String {
     argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")
 }
 
 /// `explain`: print the expanded plan, one process per line.
 ///
+/// `target` is an alias executable, or template source with `is_template`.
 /// Failed file checks are listed after the plan rather than replacing it.
-///
-/// :param is_template: whether `target` is template source rather than a file
-/// :param target: alias executable, or template source
-/// :param args: arguments to expand with
-/// :return: exit status
+/// Returns the exit status.
 fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     // Resolve the name (for `{0}`) and template from whichever form was given.
     // A bare template has no alias name, so it gets ours, as with `eval`.

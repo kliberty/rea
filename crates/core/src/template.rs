@@ -68,10 +68,8 @@ pub enum Index {
 }
 
 impl Index {
-    /// Resolve to a 1-based argument position.
-    ///
-    /// :param count: how many arguments there are
-    /// :return: the position, or `None` if there are too few arguments
+    /// Resolve to a 1-based argument position, or `None` if there are too few
+    /// arguments.
     fn position(self, count: usize) -> Option<usize> {
         match self {
             Index::Front(k) => (k <= count).then_some(k),
@@ -79,9 +77,8 @@ impl Index {
         }
     }
 
-    /// The number as written, ignoring direction; sizes the arity search.
-    ///
-    /// :return: N for both `{N}` and `{-N}`
+    /// The number as written, ignoring direction (N for both `{N}` and `{-N}`);
+    /// sizes the arity search.
     fn magnitude(self) -> usize {
         match self {
             Index::Front(k) | Index::Back(k) => k,
@@ -89,8 +86,6 @@ impl Index {
     }
 
     /// The position as it is written inside braces, e.g. `-2`.
-    ///
-    /// :return: the text
     fn as_written(self) -> String {
         match self {
             Index::Front(k) => k.to_string(),
@@ -101,9 +96,6 @@ impl Index {
 
 impl fmt::Display for Index {
     /// Show the reference as written, e.g. `{-2}`.
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{{{}}}", self.as_written())
     }
@@ -128,7 +120,7 @@ impl Multi {
     /// The set of arguments this refers to, ignoring `{@}` vs `{@+}` (which
     /// differ only in what counts are allowed, not in what they contain).
     ///
-    /// :return: a value equal for references to the same arguments
+    /// References to the same arguments give equal values.
     fn set(self) -> Multi {
         match self {
             Multi::Rest { .. } => Multi::Rest {
@@ -141,9 +133,6 @@ impl Multi {
 
 impl fmt::Display for Multi {
     /// Show the reference as written, e.g. `{2..-2}` or `{@+}`.
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Multi::Rest {
@@ -169,7 +158,7 @@ impl fmt::Display for Multi {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Check {
     /// `F`: exists and isn't a directory (symlinks followed). Looser than
-    /// `test -f` on purpose: see [`Check::run`].
+    /// `test -f` on purpose: see `Check::run`.
     File,
     /// `D`: an existing directory (symlinks followed, like `test -d`).
     Dir,
@@ -181,8 +170,6 @@ pub enum Check {
 
 impl Check {
     /// The letter this check is written as.
-    ///
-    /// :return: the letter
     fn letter(self) -> char {
         match self {
             Check::File => 'F',
@@ -192,9 +179,7 @@ impl Check {
         }
     }
 
-    /// What the check requires, for error messages.
-    ///
-    /// :return: e.g. "an existing file"
+    /// What the check requires, for error messages, e.g. "an existing file".
     fn wants(self) -> &'static str {
         match self {
             Check::File => "an existing file",
@@ -204,10 +189,9 @@ impl Check {
         }
     }
 
-    /// Run the check on one argument.
+    /// Run the check on one argument, as a path.
     ///
-    /// :param value: the argument, as a path
-    /// :return: `Ok`, or what was found instead, e.g. "is a directory"
+    /// On failure, returns what was found instead, e.g. "is a directory".
     fn run(self, value: &OsStr) -> Result<(), String> {
         let path = Path::new(value);
         // `metadata` follows symlinks, as `test -f` does; `N` looks at the
@@ -258,9 +242,7 @@ pub enum Modifier {
 }
 
 impl Modifier {
-    /// How the modifier is written.
-    ///
-    /// :return: e.g. "/."
+    /// How the modifier is written, e.g. `/.`.
     fn as_written(self) -> &'static str {
         match self {
             Modifier::Basename => "/",
@@ -276,9 +258,7 @@ impl Modifier {
     /// match fd): `a.tar.gz` loses only `.gz`, `.bashrc` has no extension, and
     /// a trailing slash is ignored. Where `Path` has no answer (the basename
     /// of `/`), the value is left as it is rather than turned into nothing.
-    ///
-    /// :param value: the argument
-    /// :return: the edited value; `OsStr` throughout, so non-UTF-8 survives
+    /// It works on `OsStr` throughout, so non-UTF-8 survives.
     fn apply(self, value: &OsStr) -> OsString {
         let path = Path::new(value);
         match self {
@@ -308,9 +288,8 @@ pub struct Format {
 }
 
 impl Format {
-    /// The format as written, including the colon; empty if there is none.
-    ///
-    /// :return: e.g. ":F/."
+    /// The format as written, including the colon, e.g. `:F/.`; empty if there
+    /// is none.
     fn suffix(self) -> String {
         if self == Format::default() {
             return String::new();
@@ -323,16 +302,11 @@ impl Format {
         format!(":{check}{}", self.modifier.map_or("", Modifier::as_written))
     }
 
-    /// Check and edit one argument.
+    /// Check and edit one argument, returning the text to substitute.
     ///
-    /// A failed check is recorded rather than returned, and the text is
-    /// produced anyway, so `explain` can show the command and every failure
-    /// together.
-    ///
-    /// :param value: the argument
-    /// :param reference: the reference as written, for error messages
-    /// :param failed: where failed checks are recorded
-    /// :return: the text to substitute
+    /// A failed check is recorded in `failed` rather than returned, and the text
+    /// is produced anyway, so `explain` can show the command and every failure
+    /// together. `reference` gives the reference as written, for the message.
     fn render(
         self,
         value: &OsStr,
@@ -356,9 +330,7 @@ impl Format {
 
 /// A reference as written, e.g. `{1:F}` or `{2..:/.}`, for messages.
 ///
-/// :param plain: the reference without a format, braces included
-/// :param format: its format
-/// :return: the reference with the format inside the braces
+/// `plain` is the reference without a format, braces included.
 fn written(plain: &str, format: Format) -> String {
     // `plain` always ends in `}`; the format goes just before it.
     format!(
@@ -436,8 +408,6 @@ struct Shape {
 
 impl Shape {
     /// Record a reference.
-    ///
-    /// :param r: the reference
     fn add(&mut self, r: Ref) {
         match r {
             // Formats don't change which arguments are used, so they are
@@ -455,9 +425,7 @@ impl Shape {
         }
     }
 
-    /// The largest N in any `{N}`, `{-N}` or slice end.
-    ///
-    /// :return: the magnitude, 0 if there are none
+    /// The largest N in any `{N}`, `{-N}` or slice end; 0 if there are none.
     fn max_magnitude(&self) -> usize {
         let ends = self
             .slices
@@ -484,10 +452,7 @@ pub struct Arity {
 }
 
 impl Arity {
-    /// Whether a number of arguments is accepted.
-    ///
-    /// :param count: the number of arguments
-    /// :return: true if the template can run with that many
+    /// Whether the template can run with `count` arguments.
     pub fn accepts(&self, count: usize) -> bool {
         self.counts.contains(&count) || self.from.is_some_and(|from| count >= from)
     }
@@ -496,9 +461,6 @@ impl Arity {
 impl fmt::Display for Arity {
     /// Describe the arity in words, e.g. "exactly 1 argument" or "2 or 4
     /// arguments".
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The common shapes get their natural phrasing.
         match (self.counts.as_slice(), self.from) {
@@ -565,11 +527,7 @@ pub struct ParseError {
 }
 
 impl ParseError {
-    /// Construct an error at a byte offset.
-    ///
-    /// :param offset: byte offset into the source
-    /// :param message: explanation for the user
-    /// :return: the error
+    /// An error at a byte offset into the source.
     fn new(offset: usize, message: impl Into<String>) -> Self {
         ParseError {
             offset: Some(offset),
@@ -577,10 +535,7 @@ impl ParseError {
         }
     }
 
-    /// Construct an error about the template as a whole.
-    ///
-    /// :param message: explanation for the user
-    /// :return: the error
+    /// An error about the template as a whole.
     fn whole(message: impl Into<String>) -> Self {
         ParseError {
             offset: None,
@@ -588,10 +543,10 @@ impl ParseError {
         }
     }
 
-    /// Render the message with the source line and a caret under the error.
+    /// Render the message with the source line and a caret under the error, as
+    /// a multi-line string for stderr.
     ///
-    /// :param src: the template source the offset refers to
-    /// :return: a multi-line string suitable for stderr
+    /// `src` must be the template source the offset refers to.
     pub fn render(&self, src: &str) -> String {
         match self.offset {
             Some(offset) => {
@@ -609,10 +564,7 @@ impl ParseError {
 }
 
 impl fmt::Display for ParseError {
-    /// Show the message alone (no source context).
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
+    /// Show the message alone, with no source context.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
@@ -665,10 +617,7 @@ struct WordBuilder {
 }
 
 impl WordBuilder {
-    /// Start an empty word.
-    ///
-    /// :param start: byte offset of the word's first character
-    /// :return: the builder
+    /// Start an empty word whose first character is at byte offset `start`.
     fn new(start: usize) -> Self {
         WordBuilder {
             start,
@@ -681,19 +630,16 @@ impl WordBuilder {
     }
 
     /// Append one literal character.
-    ///
-    /// :param c: the character
     fn push_char(&mut self, c: char) {
         // Text after a word check is reported when the word ends.
         self.after_check |= self.check.is_some();
         self.literal.push(c);
     }
 
-    /// Append an argument reference.
+    /// Append an argument reference whose opening brace is at `offset`.
     ///
-    /// :param r: the parsed reference
-    /// :param offset: byte offset of its opening brace
-    /// :return: an error if the word would mix two several-argument references
+    /// Fails if the word would mix two several-argument references, or if the word
+    /// already has a word check.
     fn push_ref(&mut self, r: Ref, offset: usize) -> Result<(), ParseError> {
         // A word check must be last (see `finish`), so nothing may follow it,
         // not even another check.
@@ -749,10 +695,7 @@ impl WordBuilder {
         }
     }
 
-    /// Finish the word.
-    ///
-    /// :param source: the word as written
-    /// :return: the word
+    /// Finish the word; `source` is the word as written.
     fn finish(mut self, source: &str) -> Result<Word, ParseError> {
         self.flush();
         if let Some((check, at)) = self.check {
@@ -786,9 +729,7 @@ impl WordBuilder {
 
 /// Parse one position: `N` or `-N`, N >= 1.
 ///
-/// :param text: the position text
-/// :param body: the whole reference body, for error messages
-/// :return: the index, or a message explaining why it is invalid
+/// `body` is the whole reference body, for error messages.
 fn parse_index(text: &str, body: &str) -> Result<Index, String> {
     // Only plain decimal digits after an optional `-`, so `{+1}` or `{1x}` fail loudly.
     let (back, digits) = match text.strip_prefix('-') {
@@ -817,10 +758,7 @@ fn parse_index(text: &str, body: &str) -> Result<Index, String> {
     })
 }
 
-/// Interpret the text between braces.
-///
-/// :param body: the text between `{` and `}`
-/// :return: the reference, or a message explaining why it is invalid
+/// Interpret the text between `{` and `}`.
 fn parse_ref_body(body: &str) -> Result<Ref, String> {
     // A format, if any, follows the first colon: `{1:F/.}`.
     let Some((target, spec)) = body.split_once(':') else {
@@ -846,11 +784,10 @@ fn parse_ref_body(body: &str) -> Result<Ref, String> {
     }
 }
 
-/// Parse a word check: exactly one check letter, no modifier.
+/// Parse a word check from the text after the colon: exactly one check
+/// letter, no modifier.
 ///
-/// :param spec: the text after the colon
-/// :param body: the whole reference body, for error messages
-/// :return: the word check
+/// `body` is the whole reference body, for error messages.
 fn parse_word_check(spec: &str, body: &str) -> Result<Ref, String> {
     match spec {
         "F" => Ok(Ref::WordCheck(Check::File)),
@@ -865,11 +802,10 @@ fn parse_word_check(spec: &str, body: &str) -> Result<Ref, String> {
     }
 }
 
-/// Parse a format: an optional check letter, then an optional modifier.
+/// Parse a format from the text after the colon: an optional check letter,
+/// then an optional modifier.
 ///
-/// :param spec: the text after the colon
-/// :param body: the whole reference body, for error messages
-/// :return: the format
+/// `body` is the whole reference body, for error messages.
 fn parse_format(spec: &str, body: &str) -> Result<Format, String> {
     let expected = "expected a check (F, D, E or N), a modifier (/, //, . or /.), or a check then a modifier, like :F/.";
     if spec.is_empty() {
@@ -901,10 +837,8 @@ fn parse_format(spec: &str, body: &str) -> Result<Format, String> {
     Ok(Format { check, modifier })
 }
 
-/// Interpret a reference without its format.
-///
-/// :param body: the text between `{` and `}`, or before the `:`
-/// :return: the reference, or a message explaining why it is invalid
+/// Interpret a reference without its format: the text between `{` and `}`,
+/// or before the `:`.
 fn parse_target(body: &str) -> Result<Ref, String> {
     match body {
         // `{}` is common in shell idioms (find -exec), so give it a targeted hint.
@@ -922,12 +856,10 @@ fn parse_target(body: &str) -> Result<Ref, String> {
     }
 }
 
-/// Parse a slice's two ends.
+/// Parse a slice's two ends, the text before and after `..` (either may be
+/// empty).
 ///
-/// :param start: text before `..` (may be empty)
-/// :param end: text after `..` (may be empty)
-/// :param body: the whole reference body, for error messages
-/// :return: the slice, or a message explaining why it is invalid
+/// `body` is the whole reference body, for error messages.
 fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
     let start = (!start.is_empty())
         .then(|| parse_index(start, body))
@@ -956,11 +888,8 @@ fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
     Ok(Ref::Multi(Multi::Slice(start, end), Format::default()))
 }
 
-/// Read a reference whose opening brace has just been consumed.
-///
-/// :param chars: the character stream, positioned just after `{`
-/// :param open: byte offset of the `{`
-/// :return: the reference
+/// Read a reference whose opening brace, at byte offset `open`, has just
+/// been consumed.
 fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, ParseError> {
     // Collect until the closing brace; references never contain spaces or
     // nested braces, so either one means the brace was never closed.
@@ -987,13 +916,10 @@ fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, P
     parse_ref_body(&body).map_err(|message| ParseError::new(open, message))
 }
 
-/// Push the word in progress, if any, onto the token list.
+/// Push the word in progress, if any, onto the token list, leaving `word` as
+/// `None`.
 ///
-/// :param word: the current builder, taken (left as `None`)
-/// :param tokens: the output list
-/// :param src: the template source
-/// :param end: byte offset just past the word
-/// :return: an error if the word is malformed
+/// `end` is the byte offset just past the word. Fails if the word is malformed.
 fn end_word(
     word: &mut Option<WordBuilder>,
     tokens: &mut Vec<Token>,
@@ -1019,10 +945,8 @@ struct Lexed {
     refs: Vec<(Ref, usize)>,
 }
 
-/// Split template source into words and operators.
-///
-/// :param src: template source
-/// :return: tokens and references, in order
+/// Split template source into words and operators, collecting references in
+/// order.
 fn lex(src: &str) -> Result<Lexed, ParseError> {
     let mut tokens = Vec::new();
     let mut refs = Vec::new();
@@ -1200,16 +1124,13 @@ struct Parser {
 }
 
 impl Parser {
-    /// Offset of the next token, or end of input; where "expected X" points.
-    ///
-    /// :return: byte offset
+    /// Byte offset of the next token, or of the end of input; where "expected X"
+    /// points.
     fn here(&mut self) -> usize {
         self.tokens.peek().map_or(self.end, |t| t.offset)
     }
 
     /// Parse `command := word+`.
-    ///
-    /// :return: the command
     fn command(&mut self) -> Result<Command, ParseError> {
         // Take words until an operator or end of input.
         let mut words = Vec::new();
@@ -1230,8 +1151,6 @@ impl Parser {
     }
 
     /// Parse `pipeline := command ("|" command)*`.
-    ///
-    /// :return: the pipeline
     fn pipeline(&mut self) -> Result<Pipeline, ParseError> {
         let mut stages = vec![self.command()?];
         // Each `|` must be followed by another command.
@@ -1245,9 +1164,8 @@ impl Parser {
         Ok(Pipeline { stages })
     }
 
-    /// Parse `list := pipeline (op pipeline)* ";"?`.
-    ///
-    /// :return: head pipeline and the operator-tagged rest
+    /// Parse `list := pipeline (op pipeline)* ";"?` into the head pipeline and
+    /// the operator-tagged rest.
     fn list(&mut self) -> Result<(Pipeline, Vec<(Op, Pipeline)>), ParseError> {
         let head = self.pipeline()?;
         let mut tail = Vec::new();
@@ -1283,9 +1201,7 @@ impl Parser {
 /// instead (`{1} {2..3} {3}`), but whether it does depends on the argument
 /// count, so templates with slices are checked per count in `layout`; this
 /// static check only exists to point a caret at the problem when it can.
-///
-/// :param refs: every reference with its offset
-/// :return: an error pointing at the highest-numbered reference of a gappy run
+/// The error points at the highest-numbered reference of a gappy run.
 fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
     // Front and back numbering are checked separately, with the same rule.
     for (back, sign) in [(false, ""), (true, "-")] {
@@ -1316,11 +1232,8 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Whether two checks can never both pass on the same path.
-///
-/// :param a: one check
-/// :param b: the other
-/// :return: the reason they can't, if they can't
+/// Why two checks can never both pass on the same path, or `None` if they
+/// can.
 fn incompatible(a: Check, b: Check) -> Option<&'static str> {
     use Check::*;
     match (a, b) {
@@ -1338,10 +1251,8 @@ fn incompatible(a: Check, b: Check) -> Option<&'static str> {
 /// Only references that always mean the same arguments are compared (the
 /// same `{N}`, the same `{-N}`, the same several-argument reference). Others
 /// may overlap only at some counts, like `{1}` and `{-1}`; those are left to
-/// fail when they run, rather than being refused for all counts.
-///
-/// :param refs: every reference with its offset
-/// :return: an error pointing at the second of a contradictory pair
+/// fail when they run, rather than being refused for all counts. The error
+/// points at the second of a contradictory pair.
 fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
     // (which arguments, check, as written) for every checked reference so far.
     let mut seen: Vec<(Result<Index, Multi>, Check, String)> = Vec::new();
@@ -1385,8 +1296,12 @@ fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
 /// the meaning is unambiguous. (With several commands, there is no obvious one
 /// to receive the arguments, so none does and extra arguments are an error.)
 ///
-/// :param src: template source
-/// :return: the parsed template
+/// # Errors
+///
+/// A syntax error, or a template that breaks the argument rules (a gap in the
+/// numbering, an unused argument, contradictory checks, or no argument count
+/// that works). The error has a byte offset when there is one place to point
+/// at.
 pub fn parse(src: &str) -> Result<Template, ParseError> {
     // Lex fully first; the parser then never deals with characters.
     let Lexed { tokens, refs } = lex(src)?;
@@ -1443,10 +1358,7 @@ struct Layout {
 }
 
 impl Layout {
-    /// The positions a several-argument reference stands for.
-    ///
-    /// :param multi: the reference
-    /// :return: 1-based positions, in order
+    /// The 1-based positions a several-argument reference stands for, in order.
     fn positions(&self, multi: Multi) -> Vec<usize> {
         match multi {
             Multi::Rest { .. } => self.rest.clone(),
@@ -1459,12 +1371,11 @@ impl Layout {
     }
 }
 
-/// Where a slice's end falls: the slice stops just before this position.
+/// Where a slice's end falls: the slice stops just before this position,
+/// which is at most `count + 1`.
 ///
-/// :param end: the end as written, or `None` for "through the last"
-/// :param count: number of arguments
-/// :return: the stopping position (up to count + 1), or `None` if the end
-///     names an argument that can't exist at this count
+/// `None` as the end means "through the last". Returns `None` if the end names
+/// an argument that can't exist at this count.
 fn stop_position(end: Option<Index>, count: usize) -> Option<usize> {
     match end {
         // No end: stop after the last argument.
@@ -1477,11 +1388,8 @@ fn stop_position(end: Option<Index>, count: usize) -> Option<usize> {
     }
 }
 
-/// A slice's first and last position, if it is non-empty.
-///
-/// :param slice: (start, end) ends; the end is exclusive
-/// :param count: number of arguments
-/// :return: first and last position, both included, or `None` if empty
+/// A slice's first and last position, both included, or `None` if it is
+/// empty. The slice's end is exclusive.
 fn slice_range(slice: (Option<Index>, Option<Index>), count: usize) -> Option<(usize, usize)> {
     let lo = slice.0.map_or(Some(1), |i| i.position(count))?;
     let stop = stop_position(slice.1, count)?;
@@ -1509,10 +1417,6 @@ enum Problem {
 /// Lay out the references for one argument count, checking the rules that
 /// don't involve comparing counts: indexes in range and distinct, `{@+}` and
 /// slices non-empty, every argument used.
-///
-/// :param shape: the template's references
-/// :param count: number of arguments
-/// :return: the layout, or why this count doesn't work
 fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // Each position may belong to at most one index ({N}/{-N}); {@} takes
     // whatever neither an index nor a slice uses.
@@ -1616,9 +1520,7 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
 /// which indexes each slice contains, and which slices overlap or contain
 /// which. Empty slices and out-of-range indexes count as "not contained".
 ///
-/// :param shape: the template's references
-/// :param count: number of arguments
-/// :return: a comparable signature
+/// The result is only meant to be compared with the result at another count.
 fn relations(shape: &Shape, count: usize) -> Vec<bool> {
     let ranges: Vec<Option<(usize, usize)>> = shape
         .slices
@@ -1646,12 +1548,8 @@ fn relations(shape: &Shape, count: usize) -> Vec<bool> {
 }
 
 /// Check every rule for one count, including that slices relate to the
-/// other references as they do with plenty of arguments.
-///
-/// :param shape: the template's references
-/// :param count: number of arguments
-/// :param plenty: a count at which every relation has settled (see `compute_arity`)
-/// :return: the layout, or why this count doesn't work
+/// other references as they do with `plenty` arguments, a count at which every
+/// relation has settled (see [`compute_arity`]).
 fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Problem> {
     let layout = layout(shape, count)?;
     // E.g. in `{1..4} {-1}`, with 3 arguments the slice would take the last
@@ -1670,10 +1568,8 @@ fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Pro
 /// front-counted and back-counted positions can never meet and at least one
 /// argument sits between them, so every count from there up behaves the same
 /// as 2K+1 (the extra arguments are all "middle" ones, treated alike). Checking
-/// the counts 0 to 2K+1 therefore decides every count.
-///
-/// :param shape: the template's references
-/// :return: the arity, or an error if no count works
+/// the counts 0 to 2K+1 therefore decides every count. It is an error if no
+/// count works.
 fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
     let plenty = 2 * shape.max_magnitude() + 1;
     let mut counts: Vec<usize> = (0..plenty)
@@ -1709,22 +1605,19 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
     Ok(Arity { counts, from })
 }
 
-/// Describe arguments that would never be used, without naming a count.
+/// Describe arguments that would never be used, without naming a count, e.g.
+/// "nothing uses arguments {1} and {-1}".
 ///
-/// At `plenty` (2K+1), positions 1..=K are only reachable as `{N}`, the last K
-/// only as `{-N}`, and the one in between stands for every middle argument;
-/// so each unused position has a count-independent name, written the way a
-/// template would refer to it.
+/// `positions` are the unused positions at `plenty` (2K+1), ascending. At that
+/// count, positions 1..=K are only reachable as `{N}`, the last K only as
+/// `{-N}`, and the one in between stands for every middle argument; so each
+/// unused position has a count-independent name, written the way a template
+/// would refer to it.
 ///
 /// Constraint on change: this states the problem and nothing more. It used to
 /// suggest `{2..}` for a slice ending at `{-1}`, but that is only one fix
 /// (adding `{-1}` or `{@}` are others), so the suggestion was more misleading
 /// than helpful.
-///
-/// :param shape: the template's references
-/// :param positions: unused positions at `plenty`, ascending
-/// :param plenty: the count they were found at
-/// :return: e.g. "nothing uses arguments {1} and {-1}"
 fn describe_unused(shape: &Shape, positions: &[usize], plenty: usize) -> String {
     let k = shape.max_magnitude();
     // Front positions, then the middle (one name for all of it), then the
@@ -1767,9 +1660,8 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// The argv when the plan is exactly one command (no pipes or operators).
-    ///
-    /// :return: the single argv, or `None` if more than one process is involved
+    /// The argv when the plan is exactly one command (no pipes or operators), or
+    /// `None` if more than one process is involved.
     pub fn as_simple(&self) -> Option<&Argv> {
         match (self.head.as_slice(), self.tail.is_empty()) {
             ([only], true) => Some(only),
@@ -1800,9 +1692,6 @@ pub enum ExpandError {
 
 impl fmt::Display for ExpandError {
     /// Describe the problem for the user.
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExpandError::WrongArgCount { arity, got } => write!(f, "expected {arity}, got {got}"),
@@ -1836,8 +1725,6 @@ impl Failures {
     ///
     /// The same check on the same argument can appear several times (`{1:F}`
     /// twice); reporting it twice would add nothing.
-    ///
-    /// :param err: the failure
     fn record(&mut self, err: ExpandError) {
         if !self.0.contains(&err) {
             self.0.push(err);
@@ -1859,24 +1746,23 @@ pub struct Preview {
 
 impl Template {
     /// True when the template is one command with no pipes or operators.
-    ///
-    /// :return: whether the template is simple
     pub fn is_simple(&self) -> bool {
         self.tail.is_empty() && self.head.stages.len() == 1
     }
 
     /// How many arguments the template accepts.
-    ///
-    /// :return: the arity
     pub fn arity(&self) -> &Arity {
         &self.arity
     }
 
     /// Substitute runtime arguments into the template.
     ///
-    /// :param name: the alias name, for `{0}`
-    /// :param args: runtime arguments, excluding the alias name
-    /// :return: the plan to run
+    /// `name` is the alias name, for `{0}`; `args` excludes it.
+    ///
+    /// # Errors
+    ///
+    /// A number of arguments the template doesn't accept, a command that expands
+    /// to nothing, or the first file check that fails.
     pub fn expand(&self, name: &str, args: &[OsString]) -> Result<Plan, ExpandError> {
         // Report only the first failed check, as before collecting them all;
         // running the rest costs a few stat calls on an error path.
@@ -1893,12 +1779,13 @@ impl Template {
     /// Substitute runtime arguments, carrying on past failed checks.
     ///
     /// For `explain`: shows what would run and everything that would stop it.
-    /// A wrong argument count or an empty command is still an error, since
-    /// there is no plan to show.
+    /// Arguments are as for [`Template::expand`].
     ///
-    /// :param name: the alias name, for `{0}`
-    /// :param args: runtime arguments, excluding the alias name
-    /// :return: the plan and the checks it failed
+    /// # Errors
+    ///
+    /// A wrong argument count or an empty command, since there is then no plan to
+    /// show. Failed checks are not errors here; they are in
+    /// [`Preview::failed_checks`].
     pub fn preview(&self, name: &str, args: &[OsString]) -> Result<Preview, ExpandError> {
         // Check the count up front; an accepted count always has a layout.
         let wrong = || ExpandError::WrongArgCount {
@@ -1930,14 +1817,10 @@ impl Template {
     }
 }
 
-/// Expand one command.
+/// Expand one command, recording failed checks in `failed`.
 ///
-/// :param command: the parsed command
-/// :param layout: where each reference lands for this argument count
-/// :param name: the alias name, for `{0}`
-/// :param args: runtime arguments; already checked against the arity
-/// :param failed: where failed checks are recorded
-/// :return: the argv
+/// `layout` says where each reference lands for this argument count, and
+/// `args` have already been checked against the arity.
 fn expand_command(
     command: &Command,
     layout: &Layout,
@@ -1974,12 +1857,10 @@ fn expand_command(
     }
 }
 
-/// Apply a word's own check (`{:N}` at its end) to one finished copy.
+/// Apply a word's own check (`{:N}` at its end) to one fully expanded copy,
+/// recording a failure in `failed`.
 ///
-/// :param word: the word
-/// :param entry: one copy of it, fully expanded
-/// :param failed: where a failed check is recorded
-/// :return: the entry, unchanged whether or not the check passed
+/// The entry is returned unchanged whether or not the check passed.
 fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
     if let Some(check) = word.check
         && let Err(found) = check.run(&entry)
@@ -1994,15 +1875,10 @@ fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
     entry
 }
 
-/// Build one argv entry from a word.
+/// Build one argv entry from a word, recording failed checks in `failed`.
 ///
-/// :param word: the word
-/// :param layout: where each reference lands
-/// :param name: the alias name, for `{0}`
-/// :param args: runtime arguments
-/// :param repeat: for a repeated word, the position this copy stands for
-/// :param failed: where failed checks are recorded
-/// :return: the entry, as OsString so non-UTF-8 filenames survive
+/// For a repeated word, `repeat` is the position this copy stands for. The
+/// entry is an `OsString` so non-UTF-8 filenames survive.
 fn build_entry(
     word: &Word,
     layout: &Layout,
@@ -2038,35 +1914,21 @@ mod tests {
     use super::*;
 
     /// Build an argv list from string literals.
-    ///
-    /// :param items: the strings
-    /// :return: owned OsStrings
     fn os(items: &[&str]) -> Vec<OsString> {
         items.iter().map(OsString::from).collect()
     }
 
     /// Parse and expand in one go, panicking on any error.
-    ///
-    /// :param src: template source
-    /// :param args: runtime arguments
-    /// :return: the plan
     fn plan(src: &str, args: &[&str]) -> Plan {
         parse(src).unwrap().expand("t", &os(args)).unwrap()
     }
 
     /// The single command a simple template expands to.
-    ///
-    /// :param src: template source
-    /// :param args: runtime arguments
-    /// :return: its argv
     fn argv(src: &str, args: &[&str]) -> Argv {
         plan(src, args).head[0].clone()
     }
 
-    /// The arity of a template, as text.
-    ///
-    /// :param src: template source
-    /// :return: e.g. "exactly 1 argument"
+    /// The arity of a template, as text, e.g. "exactly 1 argument".
     fn arity(src: &str) -> String {
         parse(src)
             .unwrap_or_else(|e| panic!("{src}: {e}"))
@@ -2519,8 +2381,7 @@ mod tests {
 
     /// A fresh scratch directory for one test.
     ///
-    /// :param tag: test-specific suffix, since tests run in parallel
-    /// :return: the directory
+    /// Tests run in parallel, so each must pass a different `tag`.
     fn scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("aliasmux-core-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -2528,11 +2389,7 @@ mod tests {
         dir
     }
 
-    /// Expand a one-argument template, returning the error message if any.
-    ///
-    /// :param src: template source
-    /// :param arg: the argument
-    /// :return: `Ok(argv)` or the error as text
+    /// Expand a one-argument template, returning the error as text if any.
     fn try_expand(src: &str, arg: &std::path::Path) -> Result<Argv, String> {
         let t = parse(src).unwrap();
         t.expand("t", &[arg.as_os_str().to_os_string()])

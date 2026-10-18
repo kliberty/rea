@@ -62,9 +62,6 @@ pub enum SlotError {
 
 impl fmt::Display for SlotError {
     /// Describe the problem for the user.
-    ///
-    /// :param f: destination formatter
-    /// :return: formatting result
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SlotError::Empty => f.write_str(
@@ -75,10 +72,12 @@ impl fmt::Display for SlotError {
     }
 }
 
-/// Read the name and template out of a slot.
+/// Read the name and template out of a slot, from a stub's static or from a
+/// file image.
 ///
-/// :param slot: the slot (from a stub's static, or from a file image)
-/// :return: `(name, template)` borrowed from the slot
+/// # Errors
+///
+/// If the slot is empty or its contents don't decode.
 pub fn decode(slot: &Slot) -> Result<(&str, &str), SlotError> {
     let len = u32::from_le_bytes(slot.len) as usize;
     // Zero length is the unpatched state, which deserves its own message.
@@ -98,11 +97,11 @@ pub fn decode(slot: &Slot) -> Result<(&str, &str), SlotError> {
         .ok_or(SlotError::Corrupt("missing name"))
 }
 
-/// Build the bytes of a patched slot.
+/// Build the bytes of a patched slot: exactly [`SIZE`] of them.
 ///
-/// :param name: alias name
-/// :param template: template source
-/// :return: exactly [`SIZE`] bytes, or an error if the payload doesn't fit
+/// # Errors
+///
+/// If the name or template contains a newline, or the payload doesn't fit.
 pub fn encode(name: &str, template: &str) -> Result<Vec<u8>, String> {
     // Newlines would break the name/template split, and alias files can't
     // produce them anyway; refuse rather than corrupt.
@@ -126,10 +125,11 @@ pub fn encode(name: &str, template: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Find the slot in a binary image.
+/// Find the slot in a binary image, as a byte offset.
 ///
-/// :param image: the whole file contents
-/// :return: byte offset of the slot
+/// # Errors
+///
+/// If the image has no slot marker or several, or the slot runs past its end.
 pub fn locate(image: &[u8]) -> Result<usize, String> {
     // Collect every marker position; there must be exactly one. Zero means
     // this isn't a stub; several would make "which one runs?" a guess.
@@ -150,11 +150,11 @@ pub fn locate(image: &[u8]) -> Result<usize, String> {
     }
 }
 
-/// Interpret the slot at `offset` in a file image.
+/// Interpret the slot at `offset`, as found by [`locate`], in a file image.
 ///
-/// :param image: the whole file contents
-/// :param offset: slot position from [`locate`]
-/// :return: `(name, template)`
+/// # Errors
+///
+/// As for [`decode`], or if the image is too short to hold a slot there.
 pub fn decode_at(image: &[u8], offset: usize) -> Result<(&str, &str), SlotError> {
     let bytes = image
         .get(offset..offset + SIZE)

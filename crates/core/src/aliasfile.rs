@@ -26,10 +26,9 @@ pub struct FileError {
     pub message: String,
 }
 
-/// Split a line into name and template, or `None` if it holds no definition.
+/// Split a line into name and template.
 ///
-/// :param raw: one line of the file
-/// :return: `None` for blank/comment lines, otherwise the halves or an error
+/// Returns `None` for a blank or comment line, which holds no definition.
 fn split_line(raw: &str) -> Option<Result<(&str, &str), &'static str>> {
     let line = raw.trim();
     // Blank lines and comments carry no definition.
@@ -46,11 +45,9 @@ fn split_line(raw: &str) -> Option<Result<(&str, &str), &'static str>> {
 
 /// Check that a name is usable as a file name on `PATH`.
 ///
-/// Used for names from the alias file and from `aliasmux new` alike, so both
-/// accept exactly the same names.
-///
-/// :param name: the proposed alias name
-/// :return: an error message, or `None` if the name is fine
+/// Returns an error message, or `None` if the name is fine. Used for names from
+/// the alias file and from `aliasmux new` alike, so both accept exactly the same
+/// names.
 pub fn name_problem(name: &str) -> Option<String> {
     // The character set is an arbitrary conservative choice: safe in file names
     // and in any shell without quoting. Widen it if you need to.
@@ -74,8 +71,9 @@ pub fn name_problem(name: &str) -> Option<String> {
 /// Parse and validate the whole file (names only; templates are checked by
 /// the caller, which has the template parser).
 ///
-/// :param src: file contents
-/// :return: the entries, or every problem found (not just the first)
+/// # Errors
+///
+/// Every problem found, not just the first.
 pub fn parse(src: &str) -> Result<Vec<Entry<'_>>, Vec<FileError>> {
     let (entries, errors) = parse_lenient(src);
     if errors.is_empty() {
@@ -89,8 +87,7 @@ pub fn parse(src: &str) -> Result<Vec<Entry<'_>>, Vec<FileError>> {
 /// problems, so a caller can go on to check those entries' templates and
 /// report everything wrong with the file in one go.
 ///
-/// :param src: file contents
-/// :return: the valid entries, and a problem per invalid line
+/// Returns the valid entries, and a problem per invalid line.
 pub fn parse_lenient(src: &str) -> (Vec<Entry<'_>>, Vec<FileError>) {
     let mut entries = Vec::new();
     let mut errors = Vec::new();

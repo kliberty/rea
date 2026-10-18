@@ -3,7 +3,7 @@
 //!
 //! The supervisor follows bash's observable behavior where it matters to
 //! callers (exit codes 126/127, signal deaths propagated, Ctrl-C stops a list)
-//! with two deliberate deviations, both documented at [`pipeline_outcome`].
+//! with two deliberate deviations, both documented at `pipeline_outcome`.
 
 use std::io;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -21,10 +21,7 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// Convert a wait status.
-    ///
-    /// :param status: status from `Child::wait`
-    /// :return: the outcome
+    /// Convert a wait status from `Child::wait`.
     fn from_status(status: ExitStatus) -> Self {
         match (status.code(), status.signal()) {
             (Some(code), _) => Outcome::Exited(code),
@@ -35,25 +32,20 @@ impl Outcome {
         }
     }
 
-    /// Whether this counts as success for `&&` / `||`.
-    ///
-    /// :return: true only for exit status 0
+    /// Whether this counts as success for `&&` / `||`: exit status 0 only.
     pub fn success(self) -> bool {
         self == Outcome::Exited(0)
     }
 
-    /// Whether the user interrupted it from the terminal (Ctrl-C or Ctrl-\).
-    ///
-    /// :return: true for death by SIGINT or SIGQUIT
+    /// Whether the user interrupted it from the terminal: death by SIGINT
+    /// (Ctrl-C) or SIGQUIT (Ctrl-\).
     fn interrupted(self) -> bool {
         matches!(self, Outcome::Signaled(libc::SIGINT | libc::SIGQUIT))
     }
 }
 
-/// Exit status for a program that could not be started, per shell convention.
-///
-/// :param err: the spawn/exec error
-/// :return: 127 for "not found", 126 for anything else (permissions, bad format)
+/// Exit status for a program that could not be started, per shell convention:
+/// 127 for "not found", 126 for anything else (permissions, bad format).
 fn spawn_failure_code(err: &io::Error) -> i32 {
     if err.kind() == io::ErrorKind::NotFound {
         127
@@ -62,11 +54,8 @@ fn spawn_failure_code(err: &io::Error) -> i32 {
     }
 }
 
-/// Print a spawn/exec failure to stderr.
-///
-/// :param alias: alias name, prefixed so the user knows which alias failed
-/// :param program: the program that could not be started
-/// :param err: the error
+/// Print a spawn or exec failure to stderr, prefixed with the alias name so
+/// the user knows which alias failed.
 fn report_spawn_failure(alias: &str, program: &std::ffi::OsStr, err: &io::Error) {
     let program = program.to_string_lossy();
     // Mirror the shell's wording for the common case; it's what users grep for.
@@ -77,11 +66,10 @@ fn report_spawn_failure(alias: &str, program: &std::ffi::OsStr, err: &io::Error)
     }
 }
 
-/// Build a `Command` from an argv.
+/// Build a `Command` from an argv, with std's PATH lookup applying to
+/// `argv[0]`.
 ///
-/// :param argv: program followed by its arguments; non-empty (the expander
-///     guarantees this)
-/// :return: the command, with std's PATH lookup applying to `argv[0]`
+/// `argv` is non-empty; the expander guarantees this.
 fn command_for(argv: &Argv) -> Command {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
@@ -92,11 +80,8 @@ fn command_for(argv: &Argv) -> Command {
 ///
 /// On success this process *becomes* the target: same PID, signals delivered
 /// straight to it, and its exit status is ours. That is why single-command
-/// aliases skip the supervisor entirely.
-///
-/// :param alias: alias name, for error messages
-/// :param argv: the command to run
-/// :return: never; exits with 126/127 if the exec fails
+/// aliases skip the supervisor entirely. Never returns: if the exec fails, it
+/// exits with 126 or 127.
 pub fn exec_single(alias: &str, argv: &Argv) -> ! {
     // std's exec resets SIGPIPE to default first (std ignores it at startup),
     // so the target behaves normally in a pipeline. Constraint on change: a raw
@@ -115,7 +100,8 @@ enum Stage {
     Failed(Outcome),
 }
 
-/// Combine stage outcomes into the pipeline's outcome.
+/// Combine stage outcomes, left to right and non-empty, into the pipeline's
+/// outcome.
 ///
 /// Deviation from sh: the result is the rightmost *failing* stage (like bash's
 /// `set -o pipefail`), not simply the last stage. Without this, in
@@ -125,9 +111,6 @@ enum Stage {
 /// Deviation from bash's pipefail: a non-final stage killed by SIGPIPE counts
 /// as success. It means a later stage stopped reading on purpose (`yes | head`),
 /// which plain pipefail misreports as failure.
-///
-/// :param outcomes: one outcome per stage, left to right; non-empty
-/// :return: the pipeline's outcome
 fn pipeline_outcome(outcomes: &[Outcome]) -> Outcome {
     let last = outcomes.len() - 1;
     // Scan right to left so the first failure found is the rightmost one.
@@ -140,11 +123,8 @@ fn pipeline_outcome(outcomes: &[Outcome]) -> Outcome {
     Outcome::Exited(0)
 }
 
-/// Run one pipeline to completion.
-///
-/// :param alias: alias name, for error messages
-/// :param stages: argv per stage, left to right; non-empty
-/// :return: the combined outcome (see [`pipeline_outcome`])
+/// Run one pipeline, given as argv per stage (left to right, non-empty), to
+/// completion, and combine the outcomes as [`pipeline_outcome`] does.
 fn run_pipeline(alias: &str, stages: &[Argv]) -> Outcome {
     let last = stages.len() - 1;
     let mut spawned = Vec::with_capacity(stages.len());
@@ -206,9 +186,7 @@ fn run_pipeline(alias: &str, stages: &[Argv]) -> Outcome {
 
 /// Run a whole plan: the first pipeline, then each operator-chained one.
 ///
-/// :param alias: alias name, for error messages
-/// :param plan: the expanded template
-/// :return: the outcome of the last pipeline that ran
+/// Returns the outcome of the last pipeline that ran.
 pub fn run_plan(alias: &str, plan: &Plan) -> Outcome {
     let mut outcome = run_pipeline(alias, &plan.head);
     for (op, stages) in &plan.tail {
@@ -250,8 +228,6 @@ pub fn restore_default_sigpipe() {
 }
 
 /// Signal handler that does nothing.
-///
-/// :param _signal: the signal number (unused)
 extern "C" fn do_nothing(_signal: libc::c_int) {}
 
 /// Keep the supervisor alive through Ctrl-C / Ctrl-\ while children run.
@@ -299,9 +275,6 @@ pub fn shield_from_terminal_signals() {
 }
 
 /// Exit with the plan's outcome, as transparently as possible.
-///
-/// :param outcome: what the plan produced
-/// :return: never
 pub fn exit_with(outcome: Outcome) -> ! {
     match outcome {
         Outcome::Exited(code) => std::process::exit(code),
