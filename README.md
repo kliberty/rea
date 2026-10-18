@@ -138,7 +138,11 @@ up stdin, so the template's own commands then see stdin at end of file.
 - Slices may overlap `{N}`, `{-N}` and each other on purpose (`{1} {1..}`),
   and they are never empty: `rm {2..}` needs a second argument. `{@}` never
   repeats what a slice already passed: in `{1} {2..-2} {@}` with five
-  arguments, `{@}` is the 4th and 5th.
+  arguments, `{@}` is the 4th and 5th. With slices, `{@}` must also be one
+  run of arguments at the start or the end, so a slice can't split it
+  (`{2..-2} {@}`) or leave it a gap to fill (`{-2..} {..-3} {@}`, which is
+  what an off-by-one looks like). Without slices it can sit in the middle:
+  `{1} --opt val {@} -o {-1}`.
 - Every argument must be used, and `{N}` / `{-N}` numbering has no gaps:
   `{3}` needs `{2}`, or a slice that covers it (`{1} {2..} {3}` is fine).
   `{@}` doesn't fill gaps, so the typo `cp {1} {3} {@}` is still caught. The count is exact unless `{@}`, `{@+}` or a slice is
