@@ -130,7 +130,7 @@ up stdin, so the template's own commands then see stdin at end of file.
   with spaces is always one word. No quoting is ever needed around `{1}`.
 - A word containing `{@}`, `{@+}` or a slice is repeated once per argument:
   `-I{@}` gives `-Ia -Ib`, and nothing at all when there are none (so
-  `rm -rf /{@}` with no arguments never becomes `rm -rf /`). The same
+  `rm -rf /{@+}` with no arguments never becomes `rm -rf /`). The same
   reference may appear twice in a word (`{@}={@}` gives `a=a b=b`), but two
   different ones may not.
 - Slices may overlap `{N}`, `{-N}` and each other on purpose (`{1} {1..}`),
