@@ -44,6 +44,8 @@ Template syntax:
                   {2..} is the 2nd onward, {..-1} all but the last. Slices
                   are never empty, and may overlap the other references.
   {0}             the alias name
+  {$NAME}         environment variable NAME, as one argument, never split;
+                  unset or empty is an error before anything runs
 
   Checks and modifiers go after a colon, on any of the above but {0}:
   {1:/}           basename                 dir/photo.jpg -> photo.jpg
@@ -75,10 +77,10 @@ Template syntax:
 
   Every argument must be used, and numbering has no gaps: {3} needs {2},
   or a slice covering it ({@} doesn't count). The count is exact unless {@},
-  {@+} or a slice is used. A single command with no references gets {@}
-  appended, like a shell alias.
+  {@+} or a slice is used. A single command with no references (not even
+  {0} or {$NAME}) gets {@} appended, like a shell alias.
 
-  $, backticks, globs, redirection, ( ) and a lone & are errors rather than
+  $ outside {$NAME}, backticks, globs, redirection, ( ) and a lone & are errors rather than
   passed through; quote or escape them to pass them literally.
 
 Examples:
@@ -87,7 +89,8 @@ Examples:
   aliasmux new incl 'gcc -I{@} -c {-1}'
   aliasmux new relink 'rm -f {@} && symlink {-1} {@}'
   aliasmux new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'
-  aliasmux new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'";
+  aliasmux new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'
+  aliasmux new backup 'rsync -ahP {@+} {$BACKUP_DIR:D}'";
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///
@@ -168,9 +171,9 @@ enum Cmd {
     },
     /// Print the commands an alias would run, without running them.
     ///
-    /// File checks that would fail are listed after the commands. The exit
-    /// status is the alias's own: 2 for a failed check, a wrong argument
-    /// count or an invalid template.
+    /// File checks that would fail and unset environment variables are listed
+    /// after the commands. The exit status is the alias's own: 2 for any of
+    /// those, a wrong argument count or an invalid template.
     Explain {
         /// Treat TARGET as template source rather than an alias executable.
         #[arg(short = 't', long = "template")]
@@ -746,7 +749,8 @@ fn format_argv(argv: &template::Argv) -> String {
 /// `explain`: print the expanded plan, one process per line.
 ///
 /// `target` is an alias executable, or template source with `is_template`.
-/// Failed file checks are listed after the plan rather than replacing it.
+/// Failed file checks and unset environment variables are listed after the
+/// plan rather than replacing it, and the variables it read are shown.
 /// Returns the exit status.
 fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     // Resolve the name (for `{0}`) and template from whichever form was given.
@@ -769,11 +773,12 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
             return aliasmux_core::USAGE_ERROR;
         }
     };
-    // Failed checks don't stop the explanation: the plan is shown, then what
-    // would stop it from running.
+    // Failed checks and unset variables don't stop the explanation: the plan
+    // is shown, then what would stop it from running.
     let template::Preview {
         plan,
-        failed_checks,
+        problems,
+        env,
     } = match parsed.preview(&name, args) {
         Ok(preview) => preview,
         Err(err) => {
@@ -802,12 +807,21 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     if plan.as_simple().is_some() {
         println!("(single command: runs via exec, no supervisor process)");
     }
-    if failed_checks.is_empty() {
+    // Values from the environment are the one input not on the command line,
+    // so show where they came from.
+    if !env.is_empty() {
+        let values: Vec<String> = env
+            .iter()
+            .map(|(var, value)| format!("{var}={}", quote(value)))
+            .collect();
+        println!("(from the environment: {})", values.join(" "));
+    }
+    if problems.is_empty() {
         return 0;
     }
     // Same wording as the alias's own error, and the same status, so
     // `explain` stays a faithful dry run for scripts.
-    for err in &failed_checks {
+    for err in &problems {
         eprintln!("{SELF_NAME}: would not run: {err}");
     }
     aliasmux_core::USAGE_ERROR

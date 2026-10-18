@@ -23,6 +23,10 @@
 //!   the 2nd onward, `{..-1}` all but the last. Slices may overlap `{N}`, `{-N}`
 //!   and each other, `{@}` leaves out what they pass, and they are never empty.
 //! * `{0}`: the alias name
+//! * `{$NAME}`: environment variable `NAME`, read when the alias runs. Like a
+//!   one-argument reference it is always exactly one argv entry, never split
+//!   into words, and it takes formats. Unset or empty is an error before
+//!   anything runs. It is not an argument, so it doesn't affect the count.
 //!
 //! Any reference except `{0}` may end in `:` and a format: a file check
 //! (`F` file, `D` directory, `E` exists, `N` doesn't exist), a path modifier
@@ -39,8 +43,8 @@
 //! contains a several-argument reference (`{@}`, `{@+}`, a slice) is repeated
 //! once per argument: `-I{@}` gives `-Ia -Ib`, and no entry at all when empty.
 //!
-//! Characters that a shell treats specially but this language does not (`$`,
-//! backticks, globs, redirections, parentheses, a lone `&`) are rejected unless
+//! Characters that a shell treats specially but this language does not (`$`
+//! outside `{$NAME}`, backticks, globs, redirections, parentheses, a lone `&`) are rejected unless
 //! escaped or quoted. `$` and backticks are rejected inside double quotes too,
 //! since sh expands them there. Accepting them silently would be worse: a
 //! template written as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
@@ -304,19 +308,19 @@ impl Format {
 
     /// Check and edit one argument, returning the text to substitute.
     ///
-    /// A failed check is recorded in `failed` rather than returned, and the text
+    /// A failed check is recorded in `findings` rather than returned, and the text
     /// is produced anyway, so `explain` can show the command and every failure
     /// together. `reference` gives the reference as written, for the message.
     fn render(
         self,
         value: &OsStr,
         reference: impl Fn() -> String,
-        failed: &mut Failures,
+        findings: &mut Findings,
     ) -> OsString {
         if let Some(check) = self.check
             && let Err(found) = check.run(value)
         {
-            failed.record(ExpandError::CheckFailed {
+            findings.record(ExpandError::CheckFailed {
                 reference: reference(),
                 wants: check.wants(),
                 value: value.to_os_string(),
@@ -349,6 +353,10 @@ pub enum Piece {
     Arg(Index, Format),
     /// `{0}`: the alias name.
     Name,
+    /// `{$NAME}`: an environment variable, read when the alias runs, with an
+    /// optional check and modifier. Always exactly one piece of text: the
+    /// value is never split into words.
+    Env(String, Format),
     /// Several arguments, each with the same optional check and modifier; the
     /// word is repeated once per argument.
     Multi(Multi, Format),
@@ -408,8 +416,8 @@ struct Shape {
 
 impl Shape {
     /// Record a reference.
-    fn add(&mut self, r: Ref) {
-        match r {
+    fn add(&mut self, r: &Ref) {
+        match *r {
             // Formats don't change which arguments are used, so they are
             // ignored here: arity is the same with or without them.
             Ref::Arg(index, _) if !self.indexes.contains(&index) => self.indexes.push(index),
@@ -570,13 +578,17 @@ impl fmt::Display for ParseError {
     }
 }
 
-/// An argument reference as written inside braces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A reference as written inside braces.
+///
+/// Not `Copy`, because of the variable name in [`Ref::Env`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Ref {
     /// `{N}` or `{-N}`, possibly with a format
     Arg(Index, Format),
     /// `{0}`
     Name,
+    /// `{$NAME}`: an environment variable, possibly with a format
+    Env(String, Format),
     /// `{@}`, `{@+}` or a slice, possibly with a format
     Multi(Multi, Format),
     /// `{:F}` etc.: a check on the whole word it ends
@@ -663,7 +675,8 @@ impl WordBuilder {
         // a zip of unequal lengths, and neither is an obvious reading.
         // Formats don't matter here: `{@}` and `{@:/.}` are the same arguments,
         // so `mv {@} {@://}/old-{@:/}` repeats in step.
-        if let Ref::Multi(multi, _) = r {
+        if let Ref::Multi(multi, _) = &r {
+            let multi = *multi;
             if let Some(existing) = self.multi.filter(|m| *m != multi.set()) {
                 return Err(ParseError::new(
                     offset,
@@ -679,6 +692,7 @@ impl WordBuilder {
         self.pieces.push(match r {
             Ref::Arg(index, format) => Piece::Arg(index, format),
             Ref::Name => Piece::Name,
+            Ref::Env(name, format) => Piece::Env(name, format),
             Ref::Multi(multi, format) => Piece::Multi(multi, format),
             // Returned early above.
             Ref::WordCheck(_) => unreachable!("word checks are not pieces"),
@@ -772,6 +786,7 @@ fn parse_ref_body(body: &str) -> Result<Ref, String> {
     match parse_target(target) {
         Ok(Ref::Arg(index, _)) => Ok(Ref::Arg(index, format)),
         Ok(Ref::Multi(multi, _)) => Ok(Ref::Multi(multi, format)),
+        Ok(Ref::Env(name, _)) => Ok(Ref::Env(name, format)),
         // The alias name isn't a path the user supplied, so checking or
         // editing it would only ever be a mistake.
         Ok(Ref::Name) => Err(format!(
@@ -849,11 +864,36 @@ fn parse_target(body: &str) -> Result<Ref, String> {
         // An open-ended slice in both directions has two spellings already
         // ({1..} and {@} when nothing else is used); a third adds nothing.
         ".." => Err("`{..}` is not a slice; write `{1..}` for every argument, or `{@}` for those nothing else uses".into()),
+        _ if body.starts_with('$') => parse_env_name(&body[1..], body),
         _ => match body.split_once("..") {
             Some((start, end)) => parse_slice(start, end, body),
             None => parse_index(body, body).map(|index| Ref::Arg(index, Format::default())),
         },
     }
+}
+
+/// Parse the name in `{$NAME}`, the text after the `$`.
+///
+/// Names are restricted to what sh accepts (letters, digits and `_`, not
+/// starting with a digit). Other names can exist in the environment, but a
+/// template naming one is far more likely a typo, such as `{$1}` for `{1}`.
+///
+/// `body` is the whole reference body, for error messages.
+fn parse_env_name(name: &str, body: &str) -> Result<Ref, String> {
+    let mut chars = name.chars();
+    let valid = match chars.next() {
+        Some(first) => {
+            (first.is_ascii_alphabetic() || first == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    };
+    if !valid {
+        return Err(format!(
+            "`{{{body}}}`: an environment variable name is letters, digits and `_`, not starting with a digit"
+        ));
+    }
+    Ok(Ref::Env(name.to_owned(), Format::default()))
 }
 
 /// Parse a slice's two ends, the text before and after `..` (either may be
@@ -1031,11 +1071,11 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                         // References work inside double quotes, so "{1}.mkv" is fine.
                         Some((open, '{')) => {
                             let r = read_ref(&mut chars, open)?;
-                            builder.push_ref(r, open)?;
                             // Word checks use no argument; leave them out.
                             if !matches!(r, Ref::WordCheck(_)) {
-                                refs.push((r, open));
+                                refs.push((r.clone(), open));
                             }
+                            builder.push_ref(r, open)?;
                         }
                         // `$` and backticks expand inside double quotes in sh, so
                         // "$1" is the shell habit most likely to slip through;
@@ -1044,7 +1084,7 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                             return Err(ParseError::new(
                                 at,
                                 format!(
-                                    "`{ch}` is not expanded here, even in double quotes; use `{{1}}`, `{{2}}`, ... for arguments, or write `\\{ch}` (or single quotes) to pass it literally"
+                                    "`{ch}` is not expanded here, even in double quotes; use `{{1}}`, `{{2}}`, ... for arguments or `{{$NAME}}` for environment variables, or write `\\{ch}` (or single quotes) to pass it literally"
                                 ),
                             ));
                         }
@@ -1070,12 +1110,12 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             // An argument reference, possibly glued to text: {1}.rot.flif
             '{' => {
                 let r = read_ref(&mut chars, offset)?;
-                word.get_or_insert_with(|| WordBuilder::new(offset))
-                    .push_ref(r, offset)?;
                 // Word checks use no argument; leave them out.
                 if !matches!(r, Ref::WordCheck(_)) {
-                    refs.push((r, offset));
+                    refs.push((r.clone(), offset));
                 }
+                word.get_or_insert_with(|| WordBuilder::new(offset))
+                    .push_ref(r, offset)?;
             }
 
             // A stray `}` is almost always a typo like `{1}}`, so refuse it
@@ -1091,7 +1131,7 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             '$' => {
                 return Err(ParseError::new(
                     offset,
-                    "`$` is not expanded here; use `{1}`, `{2}`, ... for arguments, or quote it ('$') to pass it literally",
+                    "`$` is not expanded here; use `{1}`, `{2}`, ... for arguments or `{$NAME}` for environment variables, or quote it ('$') to pass it literally",
                 ));
             }
 
@@ -1208,9 +1248,9 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
         // The numbers used in this direction, and where the highest first appears.
         let used: Vec<(usize, usize)> = refs
             .iter()
-            .filter_map(|&(r, offset)| match r {
-                Ref::Arg(Index::Front(k), _) if !back => Some((k, offset)),
-                Ref::Arg(Index::Back(k), _) if back => Some((k, offset)),
+            .filter_map(|(r, offset)| match *r {
+                Ref::Arg(Index::Front(k), _) if !back => Some((k, *offset)),
+                Ref::Arg(Index::Back(k), _) if back => Some((k, *offset)),
                 _ => None,
             })
             .collect();
@@ -1237,9 +1277,9 @@ fn check_gaps(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
 fn incompatible(a: Check, b: Check) -> Option<&'static str> {
     use Check::*;
     match (a, b) {
-        (File, Dir) | (Dir, File) => Some("an argument can't be both a file and a directory"),
+        (File, Dir) | (Dir, File) => Some("a path can't be both a file and a directory"),
         (Absent, File | Dir | Exists) | (File | Dir | Exists, Absent) => {
-            Some("an argument can't both exist and not exist")
+            Some("a path can't both exist and not exist")
         }
         _ => None,
     }
@@ -1254,22 +1294,48 @@ fn incompatible(a: Check, b: Check) -> Option<&'static str> {
 /// fail when they run, rather than being refused for all counts. The error
 /// points at the second of a contradictory pair.
 fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
-    // (which arguments, check, as written) for every checked reference so far.
-    let mut seen: Vec<(Result<Index, Multi>, Check, String)> = Vec::new();
-    for &(r, offset) in refs {
+    /// What a checked reference stands for; equal values are always the same
+    /// paths.
+    #[derive(PartialEq)]
+    enum Target<'a> {
+        Arg(Index),
+        Multi(Multi),
+        Env(&'a str),
+    }
+    // (what, check, as written) for every checked reference so far.
+    let mut seen: Vec<(Target, Check, String)> = Vec::new();
+    for (r, offset) in refs {
         let (target, check, text) = match r {
             Ref::Arg(
                 index,
                 format @ Format {
                     check: Some(check), ..
                 },
-            ) => (Ok(index), check, written(&index.to_string(), format)),
+            ) => (
+                Target::Arg(*index),
+                *check,
+                written(&index.to_string(), *format),
+            ),
             Ref::Multi(
                 multi,
                 format @ Format {
                     check: Some(check), ..
                 },
-            ) => (Err(multi.set()), check, written(&multi.to_string(), format)),
+            ) => (
+                Target::Multi(multi.set()),
+                *check,
+                written(&multi.to_string(), *format),
+            ),
+            Ref::Env(
+                name,
+                format @ Format {
+                    check: Some(check), ..
+                },
+            ) => (
+                Target::Env(name),
+                *check,
+                written(&format!("{{${name}}}"), *format),
+            ),
             _ => continue,
         };
         let clash = seen.iter().find_map(|(t, c, first)| {
@@ -1279,7 +1345,7 @@ fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
         });
         if let Some((first, why)) = clash {
             return Err(ParseError::new(
-                offset,
+                *offset,
                 format!("`{text}` contradicts `{first}`: {why}"),
             ));
         }
@@ -1317,7 +1383,7 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
 
     // Collect the distinct references, applying the implicit-`{@}` rule above.
     let mut shape = Shape::default();
-    for &(r, _) in &refs {
+    for (r, _) in &refs {
         shape.add(r);
     }
     // With slices, a gap may be covered; `layout` decides that per count.
@@ -1335,7 +1401,7 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
             check: None,
             source: "{@}".into(),
         });
-        shape.add(Ref::Multi(rest, Format::default()));
+        shape.add(&Ref::Multi(rest, Format::default()));
     }
     let arity = compute_arity(&shape)?;
     Ok(Template {
@@ -1688,6 +1754,13 @@ pub enum ExpandError {
         /// What was found instead, e.g. "is a directory".
         found: String,
     },
+    /// `{$NAME}` with `NAME` unset, or set to nothing.
+    EnvMissing {
+        /// The variable's name.
+        name: String,
+        /// Set but empty, rather than unset.
+        empty: bool,
+    },
 }
 
 impl fmt::Display for ExpandError {
@@ -1712,36 +1785,65 @@ impl fmt::Display for ExpandError {
                     value.to_string_lossy()
                 )
             }
+            ExpandError::EnvMissing { name, empty: false } => write!(f, "{{${name}}} is not set"),
+            ExpandError::EnvMissing { name, empty: true } => {
+                write!(f, "{{${name}}} is set but empty")
+            }
         }
     }
 }
 
-/// Failed checks found while expanding, in template order.
-#[derive(Debug, Default)]
-struct Failures(Vec<ExpandError>);
+/// Reads an environment variable; `std::env::var_os` outside tests.
+type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 
-impl Failures {
-    /// Record a failed check, once.
+/// What expansion learns besides the plan: the problems that would stop it,
+/// and the environment variables it read.
+struct Findings<'a> {
+    /// Every distinct problem, in template order.
+    problems: Vec<ExpandError>,
+    /// Each variable read, in order of first use, with its value.
+    env: Vec<(String, Option<OsString>)>,
+    /// Where variables are read from.
+    lookup: EnvLookup<'a>,
+}
+
+impl Findings<'_> {
+    /// Record a problem, once.
     ///
     /// The same check on the same argument can appear several times (`{1:F}`
     /// twice); reporting it twice would add nothing.
     fn record(&mut self, err: ExpandError) {
-        if !self.0.contains(&err) {
-            self.0.push(err);
+        if !self.problems.contains(&err) {
+            self.problems.push(err);
         }
+    }
+
+    /// An environment variable's value, read once per expansion so every use
+    /// sees the same value.
+    fn var(&mut self, name: &str) -> Option<OsString> {
+        if let Some((_, value)) = self.env.iter().find(|(n, _)| n == name) {
+            return value.clone();
+        }
+        let value = (self.lookup)(name);
+        self.env.push((name.to_owned(), value.clone()));
+        value
     }
 }
 
-/// A plan together with the checks that failed while building it.
+/// A plan together with what would stop it from running.
 ///
-/// Only `explain` wants this: a real run stops at the first failure.
+/// Only `explain` wants this: a real run stops at the first problem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
-    /// The plan, as it would run if every check passed.
+    /// The plan, as it would run if every problem were fixed. An unset
+    /// variable appears as its reference, e.g. `{$BACKUP_DIR}`.
     pub plan: Plan,
-    /// Every distinct failed check, in template order; each is a
-    /// [`ExpandError::CheckFailed`].
-    pub failed_checks: Vec<ExpandError>,
+    /// Every distinct problem, in template order: each is an
+    /// [`ExpandError::CheckFailed`] or an [`ExpandError::EnvMissing`].
+    pub problems: Vec<ExpandError>,
+    /// The environment variables the template read and their values, in
+    /// order of first use; unset or empty ones are in `problems` instead.
+    pub env: Vec<(String, OsString)>,
 }
 
 impl Template {
@@ -1762,21 +1864,30 @@ impl Template {
     /// # Errors
     ///
     /// A number of arguments the template doesn't accept, a command that expands
-    /// to nothing, or the first file check that fails.
+    /// to nothing, the first file check that fails, or an environment variable
+    /// that is unset or empty.
     pub fn expand(&self, name: &str, args: &[OsString]) -> Result<Plan, ExpandError> {
-        // Report only the first failed check, as before collecting them all;
-        // running the rest costs a few stat calls on an error path.
-        let Preview {
-            plan,
-            failed_checks,
-        } = self.preview(name, args)?;
-        match failed_checks.into_iter().next() {
+        self.expand_with(name, args, &|var| std::env::var_os(var))
+    }
+
+    /// [`Template::expand`], reading environment variables from `lookup`.
+    fn expand_with(
+        &self,
+        name: &str,
+        args: &[OsString],
+        lookup: EnvLookup<'_>,
+    ) -> Result<Plan, ExpandError> {
+        // Report only the first problem, as before collecting them all;
+        // finding the rest costs a few stat calls on an error path.
+        let Preview { plan, problems, .. } = self.preview_with(name, args, lookup)?;
+        match problems.into_iter().next() {
             Some(first) => Err(first),
             None => Ok(plan),
         }
     }
 
-    /// Substitute runtime arguments, carrying on past failed checks.
+    /// Substitute runtime arguments, carrying on past failed checks and unset
+    /// environment variables.
     ///
     /// For `explain`: shows what would run and everything that would stop it.
     /// Arguments are as for [`Template::expand`].
@@ -1784,9 +1895,19 @@ impl Template {
     /// # Errors
     ///
     /// A wrong argument count or an empty command, since there is then no plan to
-    /// show. Failed checks are not errors here; they are in
-    /// [`Preview::failed_checks`].
+    /// show. Other problems are not errors here; they are in
+    /// [`Preview::problems`].
     pub fn preview(&self, name: &str, args: &[OsString]) -> Result<Preview, ExpandError> {
+        self.preview_with(name, args, &|var| std::env::var_os(var))
+    }
+
+    /// [`Template::preview`], reading environment variables from `lookup`.
+    fn preview_with(
+        &self,
+        name: &str,
+        args: &[OsString],
+        lookup: EnvLookup<'_>,
+    ) -> Result<Preview, ExpandError> {
         // Check the count up front; an accepted count always has a layout.
         let wrong = || ExpandError::WrongArgCount {
             arity: self.arity.clone(),
@@ -1796,13 +1917,17 @@ impl Template {
             return Err(wrong());
         }
         let layout = layout(&self.shape, args.len()).map_err(|_| wrong())?;
-        let mut failed = Failures::default();
-        // Expand each pipeline stage by stage, in template order so failures
+        let mut findings = Findings {
+            problems: Vec::new(),
+            env: Vec::new(),
+            lookup,
+        };
+        // Expand each pipeline stage by stage, in template order so problems
         // are listed in the order they appear.
         let mut expand_pipeline = |p: &Pipeline| -> Result<Vec<Argv>, ExpandError> {
             p.stages
                 .iter()
-                .map(|c| expand_command(c, &layout, name, args, &mut failed))
+                .map(|c| expand_command(c, &layout, name, args, &mut findings))
                 .collect()
         };
         let head = expand_pipeline(&self.head)?;
@@ -1810,14 +1935,21 @@ impl Template {
         for (op, p) in &self.tail {
             tail.push((*op, expand_pipeline(p)?));
         }
+        // Unset and empty variables are already among the problems.
+        let env = findings
+            .env
+            .into_iter()
+            .filter_map(|(name, value)| value.filter(|v| !v.is_empty()).map(|v| (name, v)))
+            .collect();
         Ok(Preview {
             plan: Plan { head, tail },
-            failed_checks: failed.0,
+            problems: findings.problems,
+            env,
         })
     }
 }
 
-/// Expand one command, recording failed checks in `failed`.
+/// Expand one command, recording problems in `findings`.
 ///
 /// `layout` says where each reference lands for this argument count, and
 /// `args` have already been checked against the arity.
@@ -1826,7 +1958,7 @@ fn expand_command(
     layout: &Layout,
     name: &str,
     args: &[OsString],
-    failed: &mut Failures,
+    findings: &mut Findings,
 ) -> Result<Argv, ExpandError> {
     let mut argv = Vec::with_capacity(command.words.len());
     for word in &command.words {
@@ -1838,13 +1970,13 @@ fn expand_command(
         });
         match multi {
             None => {
-                let entry = build_entry(word, layout, name, args, None, failed);
-                argv.push(check_word(word, entry, failed));
+                let entry = build_entry(word, layout, name, args, None, findings);
+                argv.push(check_word(word, entry, findings));
             }
             Some(multi) => {
                 for position in layout.positions(multi) {
-                    let entry = build_entry(word, layout, name, args, Some(position), failed);
-                    argv.push(check_word(word, entry, failed));
+                    let entry = build_entry(word, layout, name, args, Some(position), findings);
+                    argv.push(check_word(word, entry, findings));
                 }
             }
         }
@@ -1858,14 +1990,14 @@ fn expand_command(
 }
 
 /// Apply a word's own check (`{:N}` at its end) to one fully expanded copy,
-/// recording a failure in `failed`.
+/// recording a failure in `findings`.
 ///
 /// The entry is returned unchanged whether or not the check passed.
-fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
+fn check_word(word: &Word, entry: OsString, findings: &mut Findings) -> OsString {
     if let Some(check) = word.check
         && let Err(found) = check.run(&entry)
     {
-        failed.record(ExpandError::CheckFailed {
+        findings.record(ExpandError::CheckFailed {
             reference: format!("the word {}", word.source),
             wants: check.wants(),
             value: entry.clone(),
@@ -1875,7 +2007,7 @@ fn check_word(word: &Word, entry: OsString, failed: &mut Failures) -> OsString {
     entry
 }
 
-/// Build one argv entry from a word, recording failed checks in `failed`.
+/// Build one argv entry from a word, recording problems in `findings`.
 ///
 /// For a repeated word, `repeat` is the position this copy stands for. The
 /// entry is an `OsString` so non-UTF-8 filenames survive.
@@ -1885,24 +2017,43 @@ fn build_entry(
     name: &str,
     args: &[OsString],
     repeat: Option<usize>,
-    failed: &mut Failures,
+    findings: &mut Findings,
 ) -> OsString {
     let mut entry = OsString::new();
     for piece in &word.pieces {
         match piece {
             Piece::Lit(text) => entry.push(text),
             Piece::Name => entry.push(name),
+            // Unset or empty is a problem: an empty argument is almost never
+            // what was meant, and a missing program name can't run. The
+            // reference stands in for the value, so `explain` shows where it
+            // would go.
+            Piece::Env(var, format) => {
+                let reference = || written(&format!("{{${var}}}"), *format);
+                match findings.var(var) {
+                    Some(value) if !value.is_empty() => {
+                        entry.push(format.render(&value, reference, findings));
+                    }
+                    value => {
+                        findings.record(ExpandError::EnvMissing {
+                            name: var.clone(),
+                            empty: value.is_some(),
+                        });
+                        entry.push(reference());
+                    }
+                }
+            }
             // Positions are 1-based and in range: the layout checked them.
             Piece::Arg(index, format) => {
                 entry.push(format.render(
                     &args[layout.index[index] - 1],
                     || written(&index.to_string(), *format),
-                    failed,
+                    findings,
                 ));
             }
             Piece::Multi(multi, format) => {
                 let value = &args[repeat.expect("repeated words get a position") - 1];
-                entry.push(format.render(value, || written(&multi.to_string(), *format), failed));
+                entry.push(format.render(value, || written(&multi.to_string(), *format), findings));
             }
         }
     }
@@ -2520,11 +2671,7 @@ mod tests {
         // repeated {1:F} is reported once.
         let t = parse("magick {1:F} ppm: | cjpeg -outfile {1}.jpg{:N} && rm {1:F}").unwrap();
         let preview = t.preview("t", &[input.clone().into_os_string()]).unwrap();
-        let messages: Vec<String> = preview
-            .failed_checks
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        let messages: Vec<String> = preview.problems.iter().map(ToString::to_string).collect();
         assert_eq!(messages.len(), 2, "{messages:?}");
         assert!(
             messages[0].starts_with("{1:F} needs an existing file"),
@@ -2550,6 +2697,123 @@ mod tests {
             Err(ExpandError::WrongArgCount { .. })
         ));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An environment for tests: `vars` as `NAME=value` pairs.
+    fn env_of(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
+        let vars: Vec<(String, OsString)> = vars
+            .iter()
+            .map(|(n, v)| (n.to_string(), OsString::from(v)))
+            .collect();
+        move |name| vars.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn env_references() {
+        let env = env_of(&[("DEST", "/mnt/my backup"), ("CC", "clang"), ("EMPTY", "")]);
+        // One word, spaces and all, never split; glued to text like any reference.
+        let t = parse("rsync -ahP {@+} {$DEST} {$DEST}/sub").unwrap();
+        let plan = t.expand_with("t", &os(&["a", "b"]), &env).unwrap();
+        assert_eq!(
+            plan.head[0],
+            os(&[
+                "rsync",
+                "-ahP",
+                "a",
+                "b",
+                "/mnt/my backup",
+                "/mnt/my backup/sub"
+            ])
+        );
+        // Not an argument: the count is unaffected.
+        assert_eq!(arity("{$CC} -c {1}"), "exactly 1 argument");
+        // It's a reference, so like {0} it turns off the implicit {@}.
+        assert!(!parse("ls {$HOME}").unwrap().implicit_rest);
+        // Inside double quotes too, and with modifiers.
+        let t = parse("echo \"{$CC}\" {$DEST:/}").unwrap();
+        assert_eq!(
+            t.expand_with("t", &[], &env).unwrap().head[0],
+            os(&["echo", "clang", "my backup"])
+        );
+        // Unset and empty are both problems, reported once each.
+        let t = parse("{$NOPE} {$EMPTY} {$NOPE}").unwrap();
+        let preview = t.preview_with("t", &[], &env).unwrap();
+        let messages: Vec<String> = preview.problems.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            ["{$NOPE} is not set", "{$EMPTY} is set but empty"]
+        );
+        // The reference stands in for the value, so explain shows where it goes.
+        assert_eq!(
+            preview.plan.head[0],
+            os(&["{$NOPE}", "{$EMPTY}", "{$NOPE}"])
+        );
+        // Only usable values are listed as read; each once, in order of use.
+        let t = parse("{$CC} {$DEST} {$CC} {$NOPE}").unwrap();
+        let preview = t.preview_with("t", &[], &env).unwrap();
+        assert_eq!(
+            preview.env,
+            [
+                ("CC".to_string(), OsString::from("clang")),
+                ("DEST".to_string(), OsString::from("/mnt/my backup"))
+            ]
+        );
+        // A real run stops at the first problem.
+        let err = t.expand_with("t", &[], &env).unwrap_err();
+        assert_eq!(err.to_string(), "{$NOPE} is not set");
+    }
+
+    #[test]
+    fn env_reference_checks() {
+        let dir = scratch("env-checks");
+        let dir_str = dir.to_str().unwrap();
+        let env = env_of(&[("DIR", dir_str)]);
+        assert!(
+            parse("ls {$DIR:D}")
+                .unwrap()
+                .expand_with("t", &[], &env)
+                .is_ok()
+        );
+        let err = parse("cat {$DIR:F}")
+            .unwrap()
+            .expand_with("t", &[], &env)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("{$DIR:F} needs an existing file, but '"),
+            "{err}"
+        );
+        // Contradictions are refused for variables too.
+        let err = parse("cat {$DIR:F} {$DIR:D}").unwrap_err();
+        assert_eq!(
+            err.message,
+            "`{$DIR:D}` contradicts `{$DIR:F}`: a path can't be both a file and a directory"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_reference_syntax_errors() {
+        for src in ["echo {$1}", "echo {$}", "echo {$A-B}", "echo {$ÄB}"] {
+            let err = parse(src).expect_err(src);
+            assert_eq!(err.offset, Some(5), "{src}");
+            assert!(
+                err.message.contains("an environment variable name is"),
+                "{src}: {}",
+                err.message
+            );
+        }
+        // Bare `$` is still refused, and names the syntax that works.
+        for src in ["echo $HOME", "echo \"$HOME\""] {
+            assert!(
+                parse(src)
+                    .unwrap_err()
+                    .message
+                    .contains("`{$NAME}` for environment variables"),
+                "{src}"
+            );
+        }
+        assert!(parse("echo {$_A1}").is_ok());
     }
 
     #[test]
@@ -2578,7 +2842,7 @@ mod tests {
         assert_eq!(err.offset, Some(35));
         assert_eq!(
             err.message,
-            "`{1:N}` contradicts `{1:F}`: an argument can't both exist and not exist"
+            "`{1:N}` contradicts `{1:F}`: a path can't both exist and not exist"
         );
         assert!(
             parse("cp {@:F} {@:D}")

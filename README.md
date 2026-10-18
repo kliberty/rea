@@ -96,8 +96,9 @@ aliasmux eval - ARGS                 # the same, with the template read from std
 
 `explain` shows the commands even when a file check would stop them, and
 lists those checks after them, so debugging an alias never means changing
-files to get past its checks. Its exit status is the alias's own: 2 for a
-failed check, a wrong argument count or an invalid template.
+files to get past its checks. It also shows the environment variables a
+template read, and their values. Its exit status is the alias's own: 2 for a
+failed check, an unset variable, a wrong argument count or an invalid template.
 
 `eval -` reads one line from stdin as the template, which saves a layer of
 shell quoting (`aliasmux eval - < template.txt`, or a heredoc). Reading it uses
@@ -115,6 +116,7 @@ up stdin, so the template's own commands then see stdin at end of file.
 | `{@+}` | the same, but at least one is required |
 | `{A..B}` | a slice: from argument A up to but **not including** B, counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-1}` all but the last |
 | `{0}` | the alias name |
+| `{$NAME}` | environment variable `NAME`, when the alias runs: `rsync -ahP {@+} {$BACKUP_DIR:D}` |
 | `{1:/}`, `{1://}` | basename, parent directory (`dir/photo.jpg` gives `photo.jpg`, `dir`) |
 | `{1:.}`, `{1:/.}` | without the extension, basename without it (`dir/photo`, `photo`) |
 | `{1:F}`, `{1:D}` | must be an existing file (anything but a directory) / directory |
@@ -164,9 +166,15 @@ up stdin, so the template's own commands then see stdin at end of file.
   are just a path (`--out={1}{:N}` would check `--out=…`). Checks on the same
   argument that can never both pass, like `{1:F}` and `{1:N}`, are refused
   when the alias is created.
-- A single command with no references gets `{@}` appended, like a shell
-  alias (`ll` above).
-- `$`, backticks, globs, redirection, `( )` and a lone `&` are errors rather
+- `{$NAME}` works like a one-argument reference: always exactly one word,
+  never split, and it takes checks and modifiers. Unset or empty is an error
+  before anything runs, and `explain` shows the values it used. Since the
+  value is one word, `CC="zig c++"` names a program called `zig c++`; for a
+  command with arguments, make a wrapper (`aliasmux new -o . zigcxx 'zig c++'`)
+  and point the variable at that.
+- A single command with no references (not even `{0}` or `{$NAME}`) gets
+  `{@}` appended, like a shell alias (`ll` above).
+- `$` outside `{$NAME}`, backticks, globs, redirection, `( )` and a lone `&` are errors rather
   than silently passed through. Quote or escape them to pass them literally;
   `$` and backticks need `\$` and `` \` `` even inside double quotes, as in sh.
   `find -exec ... '{}' \;` needs the braces and `;` quoted, also as in sh.
