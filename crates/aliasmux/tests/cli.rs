@@ -859,22 +859,31 @@ fn explain_shows_environment_values() {
 
 #[test]
 fn alias_runs_with_standard_fds_closed() {
-    // The stub skips std's setup, which reopened closed fds 0-2 on /dev/null;
-    // it does that itself now, so behavior is unchanged: a program run with
-    // stdout closed writes into /dev/null and succeeds, rather than failing
-    // with "Bad file descriptor".
     let dir = scratch("closed-fds");
-    let made = tool(&args![
-        "new",
-        "say",
-        "printf abc",
-        "-o",
-        dir.to_str().unwrap()
-    ]);
-    assert!(made.status.success(), "{}", stderr(&made));
-    let script = format!("{} >&-", dir.join("say").display());
-    let out = Command::new("sh").args(["-c", &script]).output().unwrap();
-    assert!(out.status.success(), "{}", stderr(&out));
+    let out_dir = dir.to_str().unwrap();
+    for (name, template) in [("say", "printf abc"), ("sayall", "printf abc | cat")] {
+        let made = tool(&args!["new", name, template, "-o", out_dir]);
+        assert!(made.status.success(), "{}", stderr(&made));
+    }
+    let run = |command: String| {
+        let script = format!("{command} >&-");
+        Command::new("sh").args(["-c", &script]).output().unwrap()
+    };
+    // A single command is exec'd with its descriptors untouched, so with
+    // stdout closed it fails exactly as it does when run directly.
+    let direct = run("printf abc".into());
+    let alias = run(dir.join("say").display().to_string());
+    assert!(!direct.status.success());
+    assert_eq!(
+        alias.status.code(),
+        direct.status.code(),
+        "{}",
+        stderr(&alias)
+    );
+    // A pipeline reopens closed descriptors on /dev/null before making its
+    // pipes, as std's runtime did, so the last stage writes there instead.
+    let piped = run(dir.join("sayall").display().to_string());
+    assert!(piped.status.success(), "{}", stderr(&piped));
     // Arguments still arrive intact, non-UTF-8 bytes included.
     let made = tool(&args![
         "new",

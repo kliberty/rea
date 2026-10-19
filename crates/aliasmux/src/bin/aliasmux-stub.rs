@@ -16,10 +16,10 @@
 //!   SIGSEGV/SIGBUS handler on an alternate stack to report overflows. Dropped:
 //!   a stack overflow becomes a plain segfault, and the stub never recurses
 //!   deeply.
-//! * Check that fds 0-2 are open: kept, as [`run::ensure_standard_fds`].
-//! * Ignore SIGPIPE: done only when a supervisor runs, by
-//!   [`run::ignore_sigpipe`]; a single command is exec'd with SIGPIPE at its
-//!   default, as before.
+//! * Reopen closed fds 0-2 on `/dev/null`, and ignore SIGPIPE: both done only
+//!   when a supervisor runs, by [`run::ensure_standard_fds`] and
+//!   [`run::ignore_sigpipe`]. A single command is exec'd with descriptors and
+//!   signal dispositions exactly as the alias received them.
 //! * Capture argv for `std::env::args`: replaced by reading `argv` here, since
 //!   std captures it without its setup only on glibc.
 //!
@@ -34,7 +34,6 @@
 use std::ffi::{CStr, OsString, c_char, c_int};
 use std::os::unix::ffi::OsStringExt;
 
-use aliasmux_core::run;
 use aliasmux_core::slot::{self, Slot};
 
 /// The template slot that `aliasmux patch` overwrites in each copy.
@@ -51,7 +50,6 @@ static SLOT: Slot = slot::EMPTY;
 /// returns normally: the alias execs, or exits with its outcome.
 #[unsafe(no_mangle)]
 extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
-    run::ensure_standard_fds();
     // The rest of argv (minus our own name) goes to the alias. Copied as raw
     // bytes, so non-UTF-8 arguments survive.
     let args: Vec<OsString> = (1..usize::try_from(argc).unwrap_or(0))

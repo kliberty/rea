@@ -5,8 +5,10 @@
 //! callers (exit codes 126/127, signal deaths propagated, Ctrl-C stops a list)
 //! with two deliberate deviations, both documented at `pipeline_outcome`.
 
+use std::ffi::CString;
 use std::io;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 
 use crate::template::{Argv, Op, Plan};
@@ -82,12 +84,40 @@ fn command_for(argv: &Argv) -> Command {
 /// straight to it, and its exit status is ours. That is why single-command
 /// aliases skip the supervisor entirely. Never returns: if the exec fails, it
 /// exits with 126 or 127.
+///
+/// The target gets everything exactly as the alias received it: file
+/// descriptors (even closed ones), signal dispositions, environment. Running
+/// an alias is then indistinguishable from running the command directly.
+///
+/// Constraint on change: this calls `execvp` itself rather than going through
+/// std's `Command::exec`, which always resets SIGPIPE to the default first.
+/// That reset exists because std's runtime ignores SIGPIPE at startup; the
+/// stub skips that runtime, so SIGPIPE is already whatever the alias
+/// inherited. If it was inherited *ignored*, it stays ignored for the target,
+/// which is what POSIX shells do with signals ignored on entry, and what the
+/// supervisor does for SIGINT (see `shield_from_terminal_signals`). The
+/// `aliasmux eval` path restores the default at startup, so it gets the
+/// default here too.
 pub fn exec_single(alias: &str, argv: &Argv) -> ! {
-    // std's exec resets SIGPIPE to default first (std ignores it at startup),
-    // so the target behaves normally in a pipeline. Constraint on change: a raw
-    // `libc::execvp` here would skip that and leave SIGPIPE ignored.
-    let err = command_for(argv).exec();
-    // `exec` only returns on failure.
+    // A NUL can't reach an exec, so a word containing one (only possible from
+    // the template text itself) is reported like any other start failure.
+    let cstrings: Result<Vec<CString>, _> = argv
+        .iter()
+        .map(|word| CString::new(word.as_bytes()))
+        .collect();
+    let err = match cstrings {
+        Ok(cstrings) => {
+            let mut pointers: Vec<*const libc::c_char> =
+                cstrings.iter().map(|c| c.as_ptr()).collect();
+            pointers.push(std::ptr::null());
+            // SAFETY: `pointers` is a NULL-terminated array of pointers to
+            // NUL-terminated strings that outlive the call. `execvp` searches
+            // PATH like the shell and only returns on failure.
+            unsafe { libc::execvp(pointers[0], pointers.as_ptr()) };
+            io::Error::last_os_error()
+        }
+        Err(_) => io::Error::new(io::ErrorKind::InvalidInput, "argument contains a NUL byte"),
+    };
     report_spawn_failure(alias, &argv[0], &err);
     std::process::exit(spawn_failure_code(&err));
 }
@@ -247,11 +277,18 @@ pub fn ignore_sigpipe() {
 /// Make sure file descriptors 0, 1 and 2 are open, opening `/dev/null` on any
 /// that are closed.
 ///
-/// std's runtime does this before `main`, and the stub skips that setup (see
-/// `aliasmux-stub.rs`). Without it, a stub started with, say, stdout closed
-/// would get a pipe on fd 1 the first time it opened one, and a pipeline's
-/// stages could end up connected to the wrong things. One `poll` call when
-/// all three are open, which is almost always.
+/// Only the supervisor needs this, since it is the only path that opens
+/// descriptors of its own (the pipes between stages). Without it, a closed
+/// fd 2 would be the first one a pipe received, and the supervisor's own
+/// error messages ("command not found") would be written into a stage's
+/// input. A single command is exec'd with its descriptors untouched instead,
+/// closed ones included, exactly as if run directly (see `exec_single`).
+///
+/// Deviation from sh: a pipeline started with, say, stdout closed gives its
+/// last stage `/dev/null` there, where sh would leave it closed. std's
+/// runtime made the same choice for every Rust program.
+///
+/// One `poll` call when all three are open, which is almost always.
 pub fn ensure_standard_fds() {
     let mut fds = [0, 1, 2].map(|fd| libc::pollfd {
         fd,
