@@ -472,6 +472,9 @@ impl fmt::Display for Arity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The common shapes get their natural phrasing.
         match (self.counts.as_slice(), self.from) {
+            // Only from `parse_for_run` on a template `parse` would refuse,
+            // such as a damaged alias.
+            ([], None) => return f.write_str("no number of arguments"),
             ([], Some(0)) => return f.write_str("any number of arguments"),
             ([], Some(1)) => return f.write_str("at least 1 argument"),
             ([], Some(from)) => return write!(f, "at least {from} arguments"),
@@ -518,8 +521,10 @@ pub struct Template {
     pub implicit_rest: bool,
     /// The references used, for arity checks and expansion.
     shape: Shape,
-    /// Computed once at parse time; parsing fails if no count is accepted.
-    arity: Arity,
+    /// Every accepted argument count. [`parse`] works it out (and fails if no
+    /// count is accepted); [`parse_for_run`] leaves it to be worked out on
+    /// first use, which a successful run never needs.
+    arity: std::cell::OnceCell<Arity>,
 }
 
 /// A syntax error, located by byte offset into the template source.
@@ -1369,6 +1374,32 @@ fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
 /// that works). The error has a byte offset when there is one place to point
 /// at.
 pub fn parse(src: &str) -> Result<Template, ParseError> {
+    let template = parse_for_run(src)?;
+    let arity = compute_arity(&template.shape)?;
+    // Freshly made, so the cell is empty and this can't fail.
+    let _ = template.arity.set(arity);
+    Ok(template)
+}
+
+/// Parse a template that [`parse`] has already accepted, such as the one
+/// stored in an alias, for running it.
+///
+/// Every check of [`parse`] still runs except the one that some argument count
+/// works, which means trying every count up to 2K+1 (see `compute_arity`),
+/// formatting a reason for each count that doesn't fit. Running an alias only
+/// needs to know whether *its* count works, and [`Template::expand`] checks
+/// exactly that. The full arity is worked out only if the count is wrong, to
+/// say which counts would have been right.
+///
+/// Why bother: that search, and the formatting machinery it pulled in, were
+/// most of the instructions and a good share of the page faults of an alias
+/// run, all spent re-proving what `aliasmux new` had already checked.
+///
+/// # Errors
+///
+/// As for [`parse`], except that a template no count satisfies is accepted;
+/// running it then fails with a wrong-count error whatever the count.
+pub fn parse_for_run(src: &str) -> Result<Template, ParseError> {
     // Lex fully first; the parser then never deals with characters.
     let Lexed { tokens, refs } = lex(src)?;
     // An empty or all-whitespace template has no command to run.
@@ -1403,13 +1434,12 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
         });
         shape.add(&Ref::Multi(rest, Format::default()));
     }
-    let arity = compute_arity(&shape)?;
     Ok(Template {
         head,
         tail,
         implicit_rest,
         shape,
-        arity,
+        arity: std::cell::OnceCell::new(),
     })
 }
 
@@ -1911,7 +1941,15 @@ impl Template {
 
     /// How many arguments the template accepts.
     pub fn arity(&self) -> &Arity {
-        &self.arity
+        // Already set by `parse`; worked out here only for `parse_for_run`. A
+        // template no count satisfies (which `parse` would have refused) gets
+        // an arity that accepts nothing, so every run reports a wrong count.
+        self.arity.get_or_init(|| {
+            compute_arity(&self.shape).unwrap_or(Arity {
+                counts: Vec::new(),
+                from: None,
+            })
+        })
     }
 
     /// Substitute runtime arguments into the template.
@@ -1965,15 +2003,18 @@ impl Template {
         args: &[OsString],
         lookup: EnvLookup<'_>,
     ) -> Result<Preview, ExpandError> {
-        // Check the count up front; an accepted count always has a layout.
-        let wrong = || ExpandError::WrongArgCount {
-            arity: self.arity.clone(),
-            got: args.len(),
-        };
-        if !self.arity.accepts(args.len()) {
-            return Err(wrong());
-        }
-        let layout = layout(&self.shape, args.len()).map_err(|_| wrong())?;
+        // Check this one count, exactly as `compute_arity` would: the full
+        // arity is only worked out if it fails, to say what would have worked.
+        // Assumption: `check_count` at a count past `plenty` agrees with its
+        // verdict at `plenty`, which `compute_arity` relies on too (tested in
+        // `runtime_count_check_matches_arity`).
+        let plenty = 2 * self.shape.max_magnitude() + 1;
+        let layout = check_count(&self.shape, args.len(), plenty).map_err(|_| {
+            ExpandError::WrongArgCount {
+                arity: self.arity().clone(),
+                got: args.len(),
+            }
+        })?;
         let mut findings = Findings {
             problems: Vec::new(),
             env: Vec::new(),
@@ -2921,6 +2962,55 @@ mod tests {
         // Counts at which {@} would split are left out, like other per-count
         // rules: here only 2 arguments keep it at the start.
         assert_eq!(arity("cmd {2..3} {@}"), "exactly 2 arguments");
+    }
+
+    #[test]
+    fn runtime_count_check_matches_arity() {
+        // `parse_for_run` + `expand` check one count with `check_count`; that
+        // must accept exactly the counts `compute_arity` accepts.
+        let templates = [
+            "ls",
+            "cmd {1}",
+            "cmd {1} {2} {-1}",
+            "cmd {-2} {-1}",
+            "cmd {@}",
+            "cmd {@+}",
+            "cmd {1} {@}",
+            "cmd {1} {@+} {-1}",
+            "cmd {1} {2..}",
+            "cmd {1} {2..-2} {@}",
+            "cmd {1..4} {-1}",
+            "cmd {..-1} {-1}",
+            "cmd {1} {2..3} {3}",
+            "cmd {2..3} {@}",
+            "cmd {1} --opt val {@} -o {-1}",
+            "cmd {1} {..-1} {-1}",
+        ];
+        for src in templates {
+            let checked = parse(src).unwrap();
+            let fast = parse_for_run(src).unwrap();
+            let plenty = 2 * checked.shape.max_magnitude() + 1;
+            for count in 0..=3 * plenty + 3 {
+                let args = vec![OsString::from("x"); count];
+                let accepted = checked.arity().accepts(count);
+                let expanded = fast.expand_with("t", &args, &|_| None);
+                assert_eq!(
+                    accepted,
+                    !matches!(expanded, Err(ExpandError::WrongArgCount { .. })),
+                    "{src} with {count} arguments"
+                );
+            }
+        }
+        // A wrong count still names the full arity, worked out on demand.
+        let err = parse_for_run("cmd {1} {2}")
+            .unwrap()
+            .expand("t", &os(&["a"]))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "expected exactly 2 arguments, got 1");
+        // A template `parse` would refuse runs, but accepts no count.
+        let never = parse_for_run("cmd {1} {..-1}").unwrap();
+        assert_eq!(never.arity().to_string(), "no number of arguments");
+        assert!(parse("cmd {1} {..-1}").is_err());
     }
 
     #[test]

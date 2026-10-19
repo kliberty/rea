@@ -62,12 +62,17 @@ const ARENA_SIZE: usize = 64 * 1024;
 /// allocation reuses its space. That suits a process that execs or exits
 /// within microseconds; the supervisor's allocations don't grow while it
 /// waits for its children.
+///
+/// Constraint on change: `used` comes *before* `bytes`, so it shares a page
+/// with the start of the buffer, which the first allocation writes anyway.
+/// After the buffer, it sat alone on a page 64 KiB further on, costing that
+/// page's faults on every run (`perf trace -F all` showed them).
 #[repr(C, align(16))]
 struct Arena {
-    /// The memory handed out.
-    bytes: UnsafeCell<[u8; ARENA_SIZE]>,
     /// Bytes of `bytes` in use, from the start.
     used: AtomicUsize,
+    /// The memory handed out.
+    bytes: UnsafeCell<[u8; ARENA_SIZE]>,
 }
 
 // SAFETY: `bytes` is only ever handed out in disjoint pieces, and `used`,
@@ -94,7 +99,13 @@ unsafe impl GlobalAlloc for Arena {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // Ordering: `used` only has to hand out each byte once, which any
         // atomic compare-and-swap guarantees; nothing is published through it.
-        let mut used = self.used.load(Ordering::Relaxed);
+        //
+        // Start by guessing 0 rather than loading `used`: a compare-and-swap
+        // is a write even when it fails, so the first touch of the page is a
+        // write. Reading an untouched page first maps the shared zero page,
+        // then the write faults a second time for a real one. A wrong guess
+        // costs one failed compare-and-swap, which returns the real value.
+        let mut used = 0;
         loop {
             // Alignment is a power of two, so rounding up is a mask.
             let start = (self.base() + used + layout.align() - 1) & !(layout.align() - 1);
@@ -168,8 +179,8 @@ unsafe impl GlobalAlloc for Arena {
 /// Every allocation in the stub goes through the arena first.
 #[global_allocator]
 static ALLOCATOR: Arena = Arena {
-    bytes: UnsafeCell::new([0; ARENA_SIZE]),
     used: AtomicUsize::new(0),
+    bytes: UnsafeCell::new([0; ARENA_SIZE]),
 };
 
 /// The template slot that `aliasmux patch` overwrites in each copy.
@@ -203,7 +214,7 @@ extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
     // opaque, forcing real loads of whatever bytes the file holds at run time.
     let current: &Slot = std::hint::black_box(&SLOT);
     match slot::decode(current) {
-        Ok((name, template)) => aliasmux_core::run_alias(name, template, &args),
+        Ok((name, template)) => aliasmux_core::run_stored_alias(name, template, &args),
         // Running the raw stub, or a damaged copy: explain, using the shell's
         // "not executable" status since there is nothing to run.
         Err(err) => {
