@@ -216,14 +216,65 @@ pub fn run_plan(alias: &str, plan: &Plan) -> Outcome {
 /// panic: `aliasmux list | head` would print "failed printing to stdout".
 /// Restoring the default makes the process simply end, as `ls | head` does.
 ///
-/// Only the `aliasmux` tool needs this. The stub never writes to stdout
-/// itself, and the commands it starts already get SIGPIPE back at its default
-/// from `Command` (see `exec_single`).
+/// Only the `aliasmux` tool needs this. The stub skips std's runtime setup
+/// (it has no `main` of std's), so its SIGPIPE starts at whatever it
+/// inherited, and the commands it starts get SIGPIPE back at its default from
+/// `Command` either way (see `exec_single`).
 pub fn restore_default_sigpipe() {
     // SAFETY: a plain disposition change with no handler; we are still
     // single-threaded at this point (called first thing in `main`).
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+/// Ignore SIGPIPE in the supervisor, so a write to a closed pipe fails with
+/// EPIPE instead of killing it.
+///
+/// The supervisor writes only error messages, to stderr. If stderr is a pipe
+/// whose reader has gone, dying there would abandon children that are still
+/// running and lose their exit status. std's runtime used to set this up for
+/// the stub before `main`; the stub now skips that setup, so it is done here,
+/// only when there is a supervisor. Children are unaffected: `Command` resets
+/// SIGPIPE to the default in each one.
+pub fn ignore_sigpipe() {
+    // SAFETY: a plain disposition change with no handler.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
+/// Make sure file descriptors 0, 1 and 2 are open, opening `/dev/null` on any
+/// that are closed.
+///
+/// std's runtime does this before `main`, and the stub skips that setup (see
+/// `aliasmux-stub.rs`). Without it, a stub started with, say, stdout closed
+/// would get a pipe on fd 1 the first time it opened one, and a pipeline's
+/// stages could end up connected to the wrong things. One `poll` call when
+/// all three are open, which is almost always.
+pub fn ensure_standard_fds() {
+    let mut fds = [0, 1, 2].map(|fd| libc::pollfd {
+        fd,
+        events: 0,
+        revents: 0,
+    });
+    // SAFETY: `fds` is a valid array of three pollfd; a zero timeout returns
+    // at once. Closed descriptors are reported as POLLNVAL.
+    let ready = unsafe { libc::poll(fds.as_mut_ptr(), 3, 0) };
+    if ready <= 0 {
+        return;
+    }
+    for pfd in fds.iter().filter(|p| p.revents & libc::POLLNVAL != 0) {
+        // `open` returns the lowest free descriptor, which is this one: the
+        // ones below it are open, or were reopened by earlier iterations.
+        // SAFETY: a constant NUL-terminated path and plain flags.
+        let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+        // Assumption: /dev/null exists. If it doesn't, carry on; the alias
+        // still runs, just without this protection.
+        if fd >= 0 && fd != pfd.fd {
+            // SAFETY: closing a descriptor this function just opened.
+            unsafe { libc::close(fd) };
+        }
     }
 }
 

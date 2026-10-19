@@ -38,6 +38,7 @@ pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
         run::exec_single(name, argv);
     }
     // Several processes: supervise them, then exit as the result dictates.
+    run::ignore_sigpipe();
     run::shield_from_terminal_signals();
     run::exit_with(run::run_plan(name, &plan));
 }

@@ -9,6 +9,14 @@ edition.workspace = true
 # executable it copies and patches once per alias. clap is linked only into
 # `aliasmux`, since the stub never references it.
 
+# Constraint on change: the stub has `#![no_main]`, so a test build of it
+# would run the stub instead of a test harness. It has no tests of its own;
+# the integration tests run real aliases made from it.
+[[bin]]
+name = "aliasmux-stub"
+path = "src/bin/aliasmux-stub.rs"
+test = false
+
 [dependencies]
 aliasmux-core.workspace = true
 clap.workspace = true

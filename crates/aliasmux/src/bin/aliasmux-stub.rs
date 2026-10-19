@@ -3,7 +3,38 @@
 //! `aliasmux new` and `aliasmux patch` copy this binary once per alias and
 //! write the alias into [`SLOT`]. Each copy is then a standalone executable:
 //! its name on disk doesn't matter, and nothing else is needed at run time.
+//!
+//! Deviation from a normal Rust program: `#![no_main]`. The C runtime calls
+//! our `main` directly, skipping std's setup before `main`, which is most of
+//! what an alias costs beyond the exec itself. Measured with
+//! `perf stat -e instructions:k` on a static build, a stub with std's setup
+//! cost more than twice the kernel work of a C++ wrapper doing the same job.
+//! What that setup did, and what replaces it:
+//!
+//! * Find the main thread's stack bounds for overflow detection (glibc reads
+//!   and parses `/proc/self/maps`, musl probes with `mremap`), and install a
+//!   SIGSEGV/SIGBUS handler on an alternate stack to report overflows. Dropped:
+//!   a stack overflow becomes a plain segfault, and the stub never recurses
+//!   deeply.
+//! * Check that fds 0-2 are open: kept, as [`run::ensure_standard_fds`].
+//! * Ignore SIGPIPE: done only when a supervisor runs, by
+//!   [`run::ignore_sigpipe`]; a single command is exec'd with SIGPIPE at its
+//!   default, as before.
+//! * Capture argv for `std::env::args`: replaced by reading `argv` here, since
+//!   std captures it without its setup only on glibc.
+//!
+//! Constraint on change: this binary must not rely on anything std
+//! initializes before `main`.
+//!
+//! [`run::ensure_standard_fds`]: aliasmux_core::run::ensure_standard_fds
+//! [`run::ignore_sigpipe`]: aliasmux_core::run::ignore_sigpipe
 
+#![no_main]
+
+use std::ffi::{CStr, OsString, c_char, c_int};
+use std::os::unix::ffi::OsStringExt;
+
+use aliasmux_core::run;
 use aliasmux_core::slot::{self, Slot};
 
 /// The template slot that `aliasmux patch` overwrites in each copy.
@@ -15,7 +46,22 @@ use aliasmux_core::slot::{self, Slot};
 static SLOT: Slot = slot::EMPTY;
 
 /// Read the patched alias from [`SLOT`] and run it.
-fn main() {
+///
+/// Called by the C runtime with the process's `argc` and `argv`. Never
+/// returns normally: the alias execs, or exits with its outcome.
+#[unsafe(no_mangle)]
+extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
+    run::ensure_standard_fds();
+    // The rest of argv (minus our own name) goes to the alias. Copied as raw
+    // bytes, so non-UTF-8 arguments survive.
+    let args: Vec<OsString> = (1..usize::try_from(argc).unwrap_or(0))
+        .map(|i| {
+            // SAFETY: the C runtime passes `argc` pointers to valid
+            // NUL-terminated strings, which live for the whole process.
+            let arg = unsafe { CStr::from_ptr(*argv.add(i)) };
+            OsString::from_vec(arg.to_bytes().to_vec())
+        })
+        .collect();
     // Constraint on change: read the slot through `black_box`. To the compiler
     // SLOT is an immutable static whose contents it knows (the empty
     // placeholder), so without this it may constant-fold `len == 0` and
@@ -23,17 +69,12 @@ fn main() {
     // opaque, forcing real loads of whatever bytes the file holds at run time.
     let current: &Slot = std::hint::black_box(&SLOT);
     match slot::decode(current) {
-        // The rest of argv (minus our own name) goes to the alias.
-        Ok((name, template)) => aliasmux_core::run_alias(
-            name,
-            template,
-            &std::env::args_os().skip(1).collect::<Vec<_>>(),
-        ),
+        Ok((name, template)) => aliasmux_core::run_alias(name, template, &args),
         // Running the raw stub, or a damaged copy: explain, using the shell's
         // "not executable" status since there is nothing to run.
         Err(err) => {
             eprintln!("aliasmux-stub: {err}");
-            std::process::exit(126);
+            126
         }
     }
 }

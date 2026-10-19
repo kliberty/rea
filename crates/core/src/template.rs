@@ -54,7 +54,6 @@
 //! syntax errors (and templates that no argument count could satisfy) surface
 //! then, not when the alias first runs.
 
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -1414,17 +1413,36 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
     })
 }
 
+/// A slice as written: its start and end, either one optional.
+type Slice = (Option<Index>, Option<Index>);
+
 /// Where each reference lands for one argument count.
+///
+/// Vectors rather than maps: a template has a handful of references, so a
+/// linear search is as fast, and std's `HashMap` would seed its hasher from
+/// `getrandom` in every alias run (see the stub's notes on startup cost).
 struct Layout {
     /// Position of each `{N}` / `{-N}`.
-    index: HashMap<Index, usize>,
+    index: Vec<(Index, usize)>,
     /// Positions `{@}` stands for, ascending.
     rest: Vec<usize>,
-    /// First and last position of each slice.
-    slices: HashMap<(Option<Index>, Option<Index>), (usize, usize)>,
+    /// First and last position of each slice, in the order of `Shape::slices`.
+    slices: Vec<(Slice, (usize, usize))>,
 }
 
 impl Layout {
+    /// The 1-based position of `{N}` / `{-N}`.
+    ///
+    /// # Panics
+    ///
+    /// If the template has no such reference; a valid layout has every one.
+    fn position(&self, index: Index) -> usize {
+        self.index
+            .iter()
+            .find_map(|&(i, p)| (i == index).then_some(p))
+            .expect("every index of the template is laid out")
+    }
+
     /// The 1-based positions a several-argument reference stands for, in order.
     fn positions(&self, multi: Multi) -> Vec<usize> {
         match multi {
@@ -1432,8 +1450,9 @@ impl Layout {
             // Present for every slice of the template once the layout is valid.
             Multi::Slice(start, end) => self
                 .slices
-                .get(&(start, end))
-                .map_or_else(Vec::new, |&(lo, hi)| (lo..=hi).collect()),
+                .iter()
+                .find(|(s, _)| *s == (start, end))
+                .map_or_else(Vec::new, |&(_, (lo, hi))| (lo..=hi).collect()),
         }
     }
 }
@@ -1489,7 +1508,7 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // Each position may belong to at most one index ({N}/{-N}); {@} takes
     // whatever neither an index nor a slice uses.
     let mut owner: Vec<Option<Index>> = vec![None; count + 1];
-    let mut index = HashMap::new();
+    let mut index = Vec::with_capacity(shape.indexes.len());
     for &i in &shape.indexes {
         let position = i.position(count).ok_or_else(|| {
             Problem::Other(format!("{i} needs at least {} arguments", i.magnitude()))
@@ -1500,21 +1519,17 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
             )));
         }
         owner[position] = Some(i);
-        index.insert(i, position);
+        index.push((i, position));
     }
     // Slices must be non-empty; that is what makes {2..} safe for `rm`.
-    let mut slices = HashMap::new();
+    let mut slices: Vec<(Slice, (usize, usize))> = Vec::with_capacity(shape.slices.len());
     for &slice in &shape.slices {
         let range = slice_range(slice, count).ok_or_else(|| {
             Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1)))
         })?;
-        slices.insert(slice, range);
+        slices.push((slice, range));
     }
-    let in_a_slice = |p: usize| {
-        slices
-            .values()
-            .any(|&(lo, hi): &(usize, usize)| lo <= p && p <= hi)
-    };
+    let in_a_slice = |p: usize| slices.iter().any(|&(_, (lo, hi))| lo <= p && p <= hi);
     // {@}: every position nothing else uses, neither an index nor a slice.
     // Constraint on change: {@} used to exclude only indexes, so in
     // `{1} {2..-2} {@}` it repeated what the slice had already passed; "the
@@ -1544,11 +1559,10 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
         // holds for every count.
         let covering = |p: usize| match owner[p] {
             Some(i) => i.to_string(),
-            None => shape
-                .slices
+            None => slices
                 .iter()
-                .find(|s| slices.get(*s).is_some_and(|&(lo, hi)| lo <= p && p <= hi))
-                .map_or_else(String::new, |&(a, b)| Multi::Slice(a, b).to_string()),
+                .find(|&&(_, (lo, hi))| lo <= p && p <= hi)
+                .map_or_else(String::new, |&((a, b), _)| Multi::Slice(a, b).to_string()),
         };
         let name = if shape.rest == Some(true) {
             "{@+}"
@@ -1612,7 +1626,7 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // `flif270 *.flif` case: silently processing only the first file).
     if shape.rest.is_none() {
         let unused: Vec<usize> = (1..=count)
-            .filter(|&p| owner[p].is_none() && !slices.values().any(|&(lo, hi)| lo <= p && p <= hi))
+            .filter(|&p| owner[p].is_none() && !in_a_slice(p))
             .collect();
         if !unused.is_empty() {
             return Err(Problem::Unused(unused));
@@ -2089,7 +2103,7 @@ fn build_entry(
             // Positions are 1-based and in range: the layout checked them.
             Piece::Arg(index, format) => {
                 entry.push(format.render(
-                    &args[layout.index[index] - 1],
+                    &args[layout.position(*index) - 1],
                     || written(&index.to_string(), *format),
                     findings,
                 ));
@@ -2856,7 +2870,12 @@ mod tests {
                 "{src}"
             );
         }
-        assert!(parse("echo $HOME").unwrap_err().message.contains("write `\\$` (or quote it)"));
+        assert!(
+            parse("echo $HOME")
+                .unwrap_err()
+                .message
+                .contains("write `\\$` (or quote it)")
+        );
         assert!(parse("echo {$_A1}").is_ok());
     }
 

@@ -856,3 +856,41 @@ fn explain_shows_environment_values() {
         stderr(&out)
     );
 }
+
+#[test]
+fn alias_runs_with_standard_fds_closed() {
+    // The stub skips std's setup, which reopened closed fds 0-2 on /dev/null;
+    // it does that itself now, so behavior is unchanged: a program run with
+    // stdout closed writes into /dev/null and succeeds, rather than failing
+    // with "Bad file descriptor".
+    let dir = scratch("closed-fds");
+    let made = tool(&args![
+        "new",
+        "say",
+        "printf abc",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    let script = format!("{} >&-", dir.join("say").display());
+    let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Arguments still arrive intact, non-UTF-8 bytes included.
+    let made = tool(&args![
+        "new",
+        "show",
+        "printf '%s|' {@}",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    use std::os::unix::ffi::OsStrExt;
+    let raw = OsStr::from_bytes(b"caf\xe9");
+    let out = Command::new(dir.join("show"))
+        .args([OsStr::new("a b"), raw])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(out.stdout, b"a b|caf\xe9|");
+    let _ = fs::remove_dir_all(&dir);
+}
