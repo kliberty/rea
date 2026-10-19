@@ -7,6 +7,10 @@ Ideas that are designed or agreed on but not built yet. Newest first.
 Low priority: worth more as a learning exercise than for speed (about 5 µs
 per run, against about 100 µs for the exec itself).
 
+Started in [experiments/hot-order](experiments/hot-order/README.md): tools
+to trace which functions run and build an ordering file from them, and what
+the first measurements showed (a small gain so far).
+
 `perf trace -F all --no-syscalls ~/.local/bin/ALIAS` on the static musl stub
 shows 10 page faults of its own, against 4 for a minimal C++ wrapper. Six of
 the extra ones are code and read-only data: the code that runs is spread
