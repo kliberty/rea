@@ -511,7 +511,9 @@ impl fmt::Display for Arity {
 }
 
 /// A fully parsed template.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Equality is written by hand rather than derived: see the `PartialEq` impl.
+#[derive(Debug, Clone)]
 pub struct Template {
     /// The first pipeline.
     pub head: Pipeline,
@@ -526,6 +528,34 @@ pub struct Template {
     /// first use, which a successful run never needs.
     arity: std::cell::OnceCell<Arity>,
 }
+
+/// Templates are equal when they say the same thing, whether or not their
+/// arity has been worked out yet.
+///
+/// Constraint on change: `arity` must stay out of the comparison. It is a
+/// cache, filled by [`parse`] and left empty by [`parse_for_run`], so a
+/// derived comparison would call the same template unequal to itself
+/// depending on how it was parsed. Leaving it out loses nothing: the arity is
+/// computed from `shape`, which is compared.
+impl PartialEq for Template {
+    fn eq(&self, other: &Self) -> bool {
+        // Destructured, so a field added later can't be silently left out:
+        // the compiler insists every field is named here.
+        let Template {
+            head,
+            tail,
+            implicit_rest,
+            shape,
+            arity: _,
+        } = self;
+        *head == other.head
+            && *tail == other.tail
+            && *implicit_rest == other.implicit_rest
+            && *shape == other.shape
+    }
+}
+
+impl Eq for Template {}
 
 /// A syntax error, located by byte offset into the template source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3001,6 +3031,14 @@ mod tests {
                 );
             }
         }
+        // How a template was parsed doesn't affect equality, before or after
+        // its arity is worked out.
+        let checked = parse("cmd {1} {@}").unwrap();
+        let fast = parse_for_run("cmd {1} {@}").unwrap();
+        assert_eq!(checked, fast);
+        let _ = fast.arity();
+        assert_eq!(checked, fast);
+        assert_ne!(checked, parse("cmd {1} {@+}").unwrap());
         // A wrong count still names the full arity, worked out on demand.
         let err = parse_for_run("cmd {1} {2}")
             .unwrap()
