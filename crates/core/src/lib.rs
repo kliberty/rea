@@ -20,9 +20,30 @@ pub const USAGE_ERROR: i32 = 2;
 /// `name` is the alias name, used as the prefix of every error message; `args`
 /// excludes it. Never returns: exits with the alias's outcome.
 pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
+    run_parsed(name, source, args, template::parse(source));
+}
+
+/// Run the template stored in an alias, which `aliasmux new` or `patch`
+/// already validated.
+///
+/// Like [`run_alias`], but parses with [`template::parse_for_run`], which
+/// skips re-proving that some argument count works. Never returns.
+pub fn run_stored_alias(name: &str, source: &str, args: &[OsString]) -> ! {
+    run_parsed(name, source, args, template::parse_for_run(source));
+}
+
+/// Report a parse failure, or expand and run the template.
+///
+/// Never returns: exits with the alias's outcome.
+fn run_parsed(
+    name: &str,
+    source: &str,
+    args: &[OsString],
+    parsed: Result<template::Template, template::ParseError>,
+) -> ! {
     // Templates are validated when an alias is created, so this only fails
     // for ad-hoc templates (`aliasmux eval`) or a damaged stub.
-    let parsed = template::parse(source).unwrap_or_else(|err| {
+    let parsed = parsed.unwrap_or_else(|err| {
         eprintln!("{name}: invalid template: {}", err.render(source));
         std::process::exit(USAGE_ERROR);
     });
@@ -38,6 +59,8 @@ pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
         run::exec_single(name, argv);
     }
     // Several processes: supervise them, then exit as the result dictates.
+    run::ensure_standard_fds();
+    run::ignore_sigpipe();
     run::shield_from_terminal_signals();
     run::exit_with(run::run_plan(name, &plan));
 }

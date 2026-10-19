@@ -856,3 +856,86 @@ fn explain_shows_environment_values() {
         stderr(&out)
     );
 }
+
+#[test]
+fn alias_runs_with_standard_fds_closed() {
+    let dir = scratch("closed-fds");
+    let out_dir = dir.to_str().unwrap();
+    for (name, template) in [("say", "printf abc"), ("sayall", "printf abc | cat")] {
+        let made = tool(&args!["new", name, template, "-o", out_dir]);
+        assert!(made.status.success(), "{}", stderr(&made));
+    }
+    let run = |command: String| {
+        let script = format!("{command} >&-");
+        Command::new("sh").args(["-c", &script]).output().unwrap()
+    };
+    // A single command is exec'd with its descriptors untouched, so with
+    // stdout closed it fails exactly as it does when run directly.
+    let direct = run("printf abc".into());
+    let alias = run(dir.join("say").display().to_string());
+    assert!(!direct.status.success());
+    assert_eq!(
+        alias.status.code(),
+        direct.status.code(),
+        "{}",
+        stderr(&alias)
+    );
+    // A pipeline reopens closed descriptors on /dev/null before making its
+    // pipes, as std's runtime did, so the last stage writes there instead.
+    let piped = run(dir.join("sayall").display().to_string());
+    assert!(piped.status.success(), "{}", stderr(&piped));
+    // Arguments still arrive intact, non-UTF-8 bytes included.
+    let made = tool(&args![
+        "new",
+        "show",
+        "printf '%s|' {@}",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    use std::os::unix::ffi::OsStrExt;
+    let raw = OsStr::from_bytes(b"caf\xe9");
+    let out = Command::new(dir.join("show"))
+        .args([OsStr::new("a b"), raw])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(out.stdout, b"a b|caf\xe9|");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn alias_handles_arguments_beyond_its_arena() {
+    // The stub allocates from a 64 KiB static buffer first and falls back to
+    // the system allocator; about 200 KB of arguments goes well past it, and
+    // through the copy when a block outgrows the buffer.
+    let dir = scratch("big-args");
+    let made = tool(&args![
+        "new",
+        "count",
+        "printf '%s\\n' {@+} | wc -l",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    let args: Vec<String> = (0..2000).map(|i| format!("{i:0>100}")).collect();
+    let out = Command::new(dir.join("count"))
+        .args(&args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "2000");
+    // The single-command path too: the exec'd program sees every argument.
+    let made = tool(&args![
+        "new",
+        "each",
+        "printf '%s\\n' {@}",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    let out = Command::new(dir.join("each")).args(&args).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), args.join("\n") + "\n");
+    let _ = fs::remove_dir_all(&dir);
+}
