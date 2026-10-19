@@ -18,8 +18,31 @@ ALIASES ?= aliases.txt
 STATIC_TARGET := $(shell uname -m)-unknown-linux-musl
 
 # Extra cargo flags; empty for a normal build, set to --target by the *-static
-# targets below. Not meant to be set by hand.
+# targets below and by PIE=no. Not meant to be set by hand.
 TARGET_FLAGS :=
+
+# Whether to build position-independent executables: yes (the default) or no.
+# A PIE loads at a random address (ASLR) but has to relocate itself at every
+# start. For the stub, which starts once per alias call, that measured as about
+# 7k user and 25k kernel instructions per call on x86_64 musl. With PIE=no, the
+# stack, heap and mmaps are still randomized; only the binary's own code and
+# data sit at a fixed address.
+PIE ?= yes
+ifeq ($(PIE),no)
+# Appended to any RUSTFLAGS from the environment rather than replacing them.
+# Only for build and install (and the static variants, which run these), so
+# test and lint don't rebuild everything when PIE changes. Assumption: rustc
+# makes a static non-PIE binary from relocation-model=static with crt-static
+# (the musl default), and a dynamic non-PIE one with glibc.
+build install: export RUSTFLAGS := $(RUSTFLAGS) -C relocation-model=static
+# Without --target, cargo applies RUSTFLAGS to proc macros (clap_derive) too,
+# which must stay position-independent and then fail to link. Naming the host
+# target keeps RUSTFLAGS to the binaries; the static variants set their own.
+# The plain build's output moves to target/HOST-TRIPLE/release as a result.
+TARGET_FLAGS = --target $(shell rustc -vV | sed -n 's/^host: //p')
+else ifneq ($(PIE),yes)
+$(error PIE must be yes or no, not "$(PIE)")
+endif
 
 # The installed tool, which `aliases` uses so that aliases are made from the
 # installed stub (the one next to it), not from whatever is in target/.
@@ -43,7 +66,9 @@ help:
 	@echo "make check-aliases   validate $(ALIASES) without writing anything"
 	@echo "make clean           remove target/"
 	@echo
-	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)"
+	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)"
+	@echo "  PIE=no builds non-position-independent binaries: faster alias"
+	@echo "  startup, but no address randomization for the binary itself"
 
 build:
 	cargo build --release --locked $(TARGET_FLAGS)
