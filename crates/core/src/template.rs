@@ -22,6 +22,7 @@
 //!   each end counted like `{N}` / `{-N}` and either one optional: `{2..}` is
 //!   the 2nd onward, `{..-1}` all but the last. Slices may overlap `{N}`, `{-N}`
 //!   and each other, `{@}` leaves out what they pass, and they are never empty.
+//!   With slices, `{@}` must be one run of arguments at the start or the end.
 //! * `{0}`: the alias name
 //! * `{$NAME}`: environment variable `NAME`, read when the alias runs. Like a
 //!   one-argument reference it is always exactly one argv entry, never split
@@ -1131,7 +1132,7 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             '$' => {
                 return Err(ParseError::new(
                     offset,
-                    "`$` is not expanded here; use `{1}`, `{2}`, ... for arguments or `{$NAME}` for environment variables, or quote it ('$') to pass it literally",
+                    "`$` is not expanded here; use `{1}`, `{2}`, ... for arguments or `{$NAME}` for environment variables, or write `\\$` (or quote it) to pass it literally",
                 ));
             }
 
@@ -1482,7 +1483,8 @@ enum Problem {
 
 /// Lay out the references for one argument count, checking the rules that
 /// don't involve comparing counts: indexes in range and distinct, `{@+}` and
-/// slices non-empty, every argument used.
+/// slices non-empty, `{@}` one run at an end when there are slices, every
+/// argument used.
 fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // Each position may belong to at most one index ({N}/{-N}); {@} takes
     // whatever neither an index nor a slice uses.
@@ -1527,6 +1529,47 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     };
     if shape.rest == Some(true) && rest.is_empty() {
         return Err(Problem::Other("{@+} would be empty".into()));
+    }
+    // With slices, {@} must be one run at the start or the end. Otherwise it
+    // can be split around a slice (`{2..-2} {@}` reorders the arguments) or
+    // quietly take whatever two slices' ends leave between them, which is
+    // what an off-by-one in a slice looks like. Without slices this can't
+    // happen: numbering has no gaps, so {N} take a run from the front, {-N}
+    // a run from the back, and {@} is the one run between them, which
+    // `{1} --opt val {@} -o {-1}` needs and can't express any other way.
+    if !shape.slices.is_empty()
+        && let (Some(&first), Some(&last)) = (rest.first(), rest.last())
+    {
+        // Name the reference covering a position: as written, so the message
+        // holds for every count.
+        let covering = |p: usize| match owner[p] {
+            Some(i) => i.to_string(),
+            None => shape
+                .slices
+                .iter()
+                .find(|s| slices.get(*s).is_some_and(|&(lo, hi)| lo <= p && p <= hi))
+                .map_or_else(String::new, |&(a, b)| Multi::Slice(a, b).to_string()),
+        };
+        let name = if shape.rest == Some(true) {
+            "{@+}"
+        } else {
+            "{@}"
+        };
+        let rule =
+            format!("with slices, {name} must be one run of arguments at the start or the end");
+        if let Some(pair) = rest.windows(2).find(|w| w[1] != w[0] + 1) {
+            return Err(Problem::Other(format!(
+                "{rule}, but {} would split it",
+                covering(pair[0] + 1)
+            )));
+        }
+        if first != 1 && last != count {
+            return Err(Problem::Other(format!(
+                "{rule}, but it would fall between {} and {}",
+                covering(first - 1),
+                covering(last + 1)
+            )));
+        }
     }
     // Gaps in {N} / {-N} numbering must be covered by a slice. {@} does not
     // count: it takes whatever nothing else uses, so letting it fill a gap
@@ -2813,7 +2856,52 @@ mod tests {
                 "{src}"
             );
         }
+        assert!(parse("echo $HOME").unwrap_err().message.contains("write `\\$` (or quote it)"));
         assert!(parse("echo {$_A1}").is_ok());
+    }
+
+    #[test]
+    fn rest_is_one_run_at_an_end_when_there_are_slices() {
+        // Split around a slice: refused, naming the slice.
+        let err = parse("echo {2..-2} remaining {@}").unwrap_err();
+        assert_eq!(
+            err.message,
+            "no number of arguments works with this template: with slices, {@} must be one run of arguments at the start or the end, but {2..-2} would split it"
+        );
+        // Left between two slices: refused, naming both in argument order.
+        let err = parse("echo {-2..} {..-3} remaining {@}").unwrap_err();
+        assert_eq!(
+            err.message,
+            "no number of arguments works with this template: with slices, {@} must be one run of arguments at the start or the end, but it would fall between {..-3} and {-2..}"
+        );
+        assert!(
+            parse("echo {..2} {@+} {-1..}")
+                .unwrap_err()
+                .message
+                .contains("{@+} must be one run")
+        );
+        // At an end, with slices: fine.
+        assert_eq!(
+            argv("cmd {1} {2..-2} {@}", &["a", "b", "c", "d", "e"]),
+            os(&["cmd", "a", "b", "c", "d", "e"])
+        );
+        assert_eq!(
+            argv("cmd {@} {-2..}", &["a", "b", "c"]),
+            os(&["cmd", "a", "b", "c"])
+        );
+        // In the middle without slices: fine, and the only way to say "zero or
+        // more between the first and the last" when text separates them.
+        assert_eq!(
+            arity("cmd {1} --opt val {@} -o {-1}"),
+            "at least 2 arguments"
+        );
+        assert_eq!(
+            argv("cmd {1} --opt val {@} -o {-1}", &["in", "out"]),
+            os(&["cmd", "in", "--opt", "val", "-o", "out"])
+        );
+        // Counts at which {@} would split are left out, like other per-count
+        // rules: here only 2 arguments keep it at the start.
+        assert_eq!(arity("cmd {2..3} {@}"), "exactly 2 arguments");
     }
 
     #[test]

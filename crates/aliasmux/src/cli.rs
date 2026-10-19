@@ -43,6 +43,7 @@ Template syntax:
                   counted like {N} or {-N}. Either end may be left out:
                   {2..} is the 2nd onward, {..-1} all but the last. Slices
                   are never empty, and may overlap the other references.
+                  With slices, {@} must be one run at the start or the end.
   {0}             the alias name
   {$NAME}         environment variable NAME, as one argument, never split;
                   unset or empty is an error before anything runs
