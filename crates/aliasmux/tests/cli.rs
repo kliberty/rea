@@ -791,3 +791,68 @@ fn explain_exits_as_the_alias_would() {
     let missing = bin().args(["explain", "/no/such/alias"]).output().unwrap();
     assert_eq!(missing.status.code(), Some(1), "{}", stderr(&missing));
 }
+
+#[test]
+fn env_references_at_run_time() {
+    let dir = scratch("env-run");
+    let marker = dir.join("ran");
+    // Set: the value is one argument, spaces and all.
+    let out = bin()
+        .args(["eval", "printf '%s|' {$GREETING}"])
+        .env("GREETING", "hello world")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "hello world|");
+    // Unset: nothing runs, not even the steps before it.
+    let template = format!(
+        "touch {} && echo {{$ALIASMUX_TEST_UNSET}}",
+        marker.display()
+    );
+    let out = bin()
+        .args(["eval", &template])
+        .env_remove("ALIASMUX_TEST_UNSET")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("{$ALIASMUX_TEST_UNSET} is not set"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!marker.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explain_shows_environment_values() {
+    let out = bin()
+        .args(["explain", "-t", "rsync -ahP {@+} {$BACKUP_DIR}", "a"])
+        .env("BACKUP_DIR", "/mnt/my backup")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "   rsync -ahP a '/mnt/my backup'\n\
+         (single command: runs via exec, no supervisor process)\n\
+         (from the environment: BACKUP_DIR='/mnt/my backup')\n"
+    );
+    // Unset: the plan is still shown, with the reference in its place.
+    let out = bin()
+        .args(["explain", "-t", "rsync -ahP {@+} {$BACKUP_DIR}", "a"])
+        .env_remove("BACKUP_DIR")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stdout(&out).starts_with("   rsync -ahP a '{$BACKUP_DIR}'\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("would not run: {$BACKUP_DIR} is not set"),
+        "{}",
+        stderr(&out)
+    );
+}
