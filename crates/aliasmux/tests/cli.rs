@@ -903,3 +903,39 @@ fn alias_runs_with_standard_fds_closed() {
     assert_eq!(out.stdout, b"a b|caf\xe9|");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn alias_handles_arguments_beyond_its_arena() {
+    // The stub allocates from a 64 KiB static buffer first and falls back to
+    // the system allocator; about 200 KB of arguments goes well past it, and
+    // through the copy when a block outgrows the buffer.
+    let dir = scratch("big-args");
+    let made = tool(&args![
+        "new",
+        "count",
+        "printf '%s\\n' {@+} | wc -l",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    let args: Vec<String> = (0..2000).map(|i| format!("{i:0>100}")).collect();
+    let out = Command::new(dir.join("count"))
+        .args(&args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "2000");
+    // The single-command path too: the exec'd program sees every argument.
+    let made = tool(&args![
+        "new",
+        "each",
+        "printf '%s\\n' {@}",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(made.status.success(), "{}", stderr(&made));
+    let out = Command::new(dir.join("each")).args(&args).output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), args.join("\n") + "\n");
+    let _ = fs::remove_dir_all(&dir);
+}

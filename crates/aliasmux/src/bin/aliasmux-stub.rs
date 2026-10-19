@@ -23,6 +23,9 @@
 //! * Capture argv for `std::env::args`: replaced by reading `argv` here, since
 //!   std captures it without its setup only on glibc.
 //!
+//! For the same reason the stub has its own allocator, [`Arena`], which keeps
+//! the C library's heap from being set up at all in the usual case.
+//!
 //! Constraint on change: this binary must not rely on anything std
 //! initializes before `main`.
 //!
@@ -31,10 +34,143 @@
 
 #![no_main]
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::UnsafeCell;
 use std::ffi::{CStr, OsString, c_char, c_int};
 use std::os::unix::ffi::OsStringExt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use aliasmux_core::slot::{self, Slot};
+
+/// Size of the stub's allocation arena.
+///
+/// Arbitrary, but generous: an alias run allocates a few kilobytes (the parsed
+/// template, the arguments, the argv to exec). Anything beyond it goes to the
+/// system allocator, so a huge argument list still works.
+const ARENA_SIZE: usize = 64 * 1024;
+
+/// A bump allocator over a static buffer, falling back to the system
+/// allocator when the buffer is full.
+///
+/// Why: the first allocation from the C library's allocator sets up its heap
+/// (with musl, two `brk` and two `mmap` calls), which was a measurable part of
+/// an alias run. The buffer is zero-initialized, so it lives in `.bss`: it
+/// costs nothing in the file, and only the pages actually used are ever
+/// faulted in.
+///
+/// Memory is never returned, except that freeing or growing the most recent
+/// allocation reuses its space. That suits a process that execs or exits
+/// within microseconds; the supervisor's allocations don't grow while it
+/// waits for its children.
+#[repr(C, align(16))]
+struct Arena {
+    /// The memory handed out.
+    bytes: UnsafeCell<[u8; ARENA_SIZE]>,
+    /// Bytes of `bytes` in use, from the start.
+    used: AtomicUsize,
+}
+
+// SAFETY: `bytes` is only ever handed out in disjoint pieces, and `used`,
+// which decides the pieces, is only changed atomically.
+unsafe impl Sync for Arena {}
+
+impl Arena {
+    /// Address of the first byte of the buffer.
+    fn base(&self) -> usize {
+        self.bytes.get() as usize
+    }
+
+    /// Whether `ptr` points into the buffer (so the arena owns it).
+    fn owns(&self, ptr: *mut u8) -> bool {
+        (self.base()..self.base() + ARENA_SIZE).contains(&(ptr as usize))
+    }
+}
+
+// SAFETY: every pointer returned is either a piece of `bytes` that no other
+// live allocation overlaps (claimed by a successful compare-and-swap on
+// `used`), aligned as requested, or one from `System`; each is released to
+// whichever allocator it came from.
+unsafe impl GlobalAlloc for Arena {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Ordering: `used` only has to hand out each byte once, which any
+        // atomic compare-and-swap guarantees; nothing is published through it.
+        let mut used = self.used.load(Ordering::Relaxed);
+        loop {
+            // Alignment is a power of two, so rounding up is a mask.
+            let start = (self.base() + used + layout.align() - 1) & !(layout.align() - 1);
+            let end = start - self.base() + layout.size();
+            if end > ARENA_SIZE {
+                // SAFETY: forwarding the caller's valid layout.
+                return unsafe { System.alloc(layout) };
+            }
+            match self
+                .used
+                .compare_exchange_weak(used, end, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return start as *mut u8,
+                Err(now) => used = now,
+            }
+        }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if self.owns(ptr) {
+            // Reclaim the space only if this was the last allocation; if
+            // anything came after it, the bytes simply stay unused.
+            let end = ptr as usize - self.base() + layout.size();
+            let start = ptr as usize - self.base();
+            let _ = self
+                .used
+                .compare_exchange(end, start, Ordering::Relaxed, Ordering::Relaxed);
+        } else {
+            // SAFETY: the pointer came from `System` with this layout.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if !self.owns(ptr) {
+            // SAFETY: the pointer came from `System` with this layout.
+            return unsafe { System.realloc(ptr, layout, new_size) };
+        }
+        // The last allocation can grow or shrink in place, which is the
+        // common case of a string or vector being built up.
+        let start = ptr as usize - self.base();
+        if start + new_size <= ARENA_SIZE
+            && self
+                .used
+                .compare_exchange(
+                    start + layout.size(),
+                    start + new_size,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            return ptr;
+        }
+        // Otherwise allocate anew and copy, possibly into the system heap.
+        // SAFETY: the caller guarantees `new_size` is valid for this alignment.
+        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        // SAFETY: a valid layout, per the caller's guarantee.
+        let new = unsafe { self.alloc(new_layout) };
+        if !new.is_null() {
+            // SAFETY: both blocks are valid for the smaller of the two sizes
+            // and don't overlap (the old one is still allocated).
+            unsafe { std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size)) };
+            // SAFETY: releasing the old block with the layout it was made with.
+            unsafe { self.dealloc(ptr, layout) };
+        }
+        new
+    }
+}
+
+/// Every allocation in the stub goes through the arena first.
+#[global_allocator]
+static ALLOCATOR: Arena = Arena {
+    bytes: UnsafeCell::new([0; ARENA_SIZE]),
+    used: AtomicUsize::new(0),
+};
 
 /// The template slot that `aliasmux patch` overwrites in each copy.
 ///
