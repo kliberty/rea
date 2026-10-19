@@ -60,7 +60,6 @@ use std::fs;
 use std::io;
 use std::iter::Peekable;
 use std::path::Path;
-use std::str::CharIndices;
 
 /// A one-argument position, as written in `{N}` or `{-N}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -683,6 +682,15 @@ impl WordBuilder {
         self.literal.push(c);
     }
 
+    /// Append a run of literal text; the same as `push_char` for each
+    /// character, in one copy.
+    fn push_str(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.after_check |= self.check.is_some();
+            self.literal.push_str(text);
+        }
+    }
+
     /// Append an argument reference whose opening brace is at `offset`.
     ///
     /// Fails if the word would mix two several-argument references, or if the word
@@ -965,7 +973,7 @@ fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
 
 /// Read a reference whose opening brace, at byte offset `open`, has just
 /// been consumed.
-fn read_ref(chars: &mut Peekable<CharIndices<'_>>, open: usize) -> Result<Ref, ParseError> {
+fn read_ref(chars: &mut Cursor<'_>, open: usize) -> Result<Ref, ParseError> {
     // Collect until the closing brace; references never contain spaces or
     // nested braces, so either one means the brace was never closed.
     let mut body = String::new();
@@ -1025,7 +1033,7 @@ struct Lexed {
 fn lex(src: &str) -> Result<Lexed, ParseError> {
     let mut tokens = Vec::new();
     let mut refs = Vec::new();
-    let mut chars = src.char_indices().peekable();
+    let mut chars = Cursor { src, pos: 0 };
     // `Some` while inside a word. A word starts at its first character, which
     // may be a quote; that is how `''` becomes an (empty) word at all.
     let mut word: Option<WordBuilder> = None;
@@ -1073,13 +1081,15 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
             // Single quotes: everything literal up to the next `'`, exactly as in sh.
             '\'' => {
                 let builder = word.get_or_insert_with(|| WordBuilder::new(offset));
-                loop {
-                    match chars.next() {
-                        Some((_, '\'')) => break,
-                        Some((_, ch)) => builder.push_char(ch),
-                        None => return Err(ParseError::new(offset, "unterminated single quote")),
-                    }
-                }
+                // Nothing is special inside, so copy up to the closing quote in
+                // one go rather than character by character.
+                let inside = offset + 1;
+                let Some(len) = src[inside..].find('\'') else {
+                    return Err(ParseError::new(offset, "unterminated single quote"));
+                };
+                builder.push_str(&src[inside..inside + len]);
+                // Skip the copied text and the closing quote.
+                chars.jump_to(inside + len + 1);
             }
 
             // Double quotes: literal, but references expand and a few escapes work.
@@ -1180,15 +1190,102 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                 ));
             }
 
-            // Anything else is ordinary word text.
-            _ => word
-                .get_or_insert_with(|| WordBuilder::new(offset))
-                .push_char(c),
+            // Anything else is ordinary word text. Take the whole run of it at
+            // once: a template is mostly plain text, and handling it a character
+            // at a time cost about 65 instructions per character on every run.
+            _ => {
+                let builder = word.get_or_insert_with(|| WordBuilder::new(offset));
+                let run = ordinary_run(&src[offset..]);
+                if run == 0 {
+                    // Not ASCII (so possibly Unicode whitespace, which the
+                    // first arm handles): one character at a time.
+                    builder.push_char(c);
+                } else {
+                    builder.push_str(&src[offset..offset + run]);
+                    // All ASCII, so one character per byte; `c` is already taken.
+                    chars.jump_to(offset + run);
+                }
+            }
         }
     }
     // The last word has no trailing separator to end it.
     end_word(&mut word, &mut tokens, src, src.len())?;
     Ok(Lexed { tokens, refs })
+}
+
+/// The lexer's position in the template, yielding `(byte offset, char)` like
+/// `str::char_indices`, but able to jump past text already copied in bulk.
+///
+/// Why not `Peekable<CharIndices>`: it can only advance a character at a
+/// time, so skipping a copied run cost about 15 instructions per character.
+struct Cursor<'a> {
+    /// The whole template source.
+    src: &'a str,
+    /// Byte offset of the next character; always on a char boundary.
+    pos: usize,
+}
+
+impl Cursor<'_> {
+    /// The next character and its byte offset, or `None` at the end.
+    fn next(&mut self) -> Option<(usize, char)> {
+        let c = self.src[self.pos..].chars().next()?;
+        let at = self.pos;
+        self.pos += c.len_utf8();
+        Some((at, c))
+    }
+
+    /// The next character, only if `wanted` accepts it; otherwise nothing is
+    /// consumed.
+    fn next_if(&mut self, wanted: impl FnOnce(&(usize, char)) -> bool) -> Option<(usize, char)> {
+        let before = self.pos;
+        let item = self.next()?;
+        if wanted(&item) {
+            Some(item)
+        } else {
+            self.pos = before;
+            None
+        }
+    }
+
+    /// Continue from byte offset `pos`, which must be a char boundary at or
+    /// after the current position.
+    fn jump_to(&mut self, pos: usize) {
+        debug_assert!(pos >= self.pos && self.src.is_char_boundary(pos));
+        self.pos = pos;
+    }
+}
+
+/// Which bytes are ordinary word text: ASCII characters that none of `lex`'s
+/// other arms handle. A table, built at compile time, because a template is
+/// mostly such text and checking each byte against a list of comparisons cost
+/// several times as much.
+///
+/// Constraint on change: this must exclude every character `lex` treats
+/// specially, or a run would swallow it. Non-ASCII is excluded too, since
+/// some of it is Unicode whitespace; it is handled a character at a time.
+const ORDINARY: [bool; 256] = {
+    let mut table = [false; 256];
+    // Printable ASCII, without the space.
+    let mut b = b'!';
+    while b <= b'~' {
+        table[b as usize] = true;
+        b += 1;
+    }
+    let special = b"|&;'\"\\{}$`()<>*?";
+    let mut i = 0;
+    while i < special.len() {
+        table[special[i] as usize] = false;
+        i += 1;
+    }
+    table
+};
+
+/// Length in bytes of the run of ordinary word text (see [`ORDINARY`]) at the
+/// start of `text`.
+fn ordinary_run(text: &str) -> usize {
+    text.bytes()
+        .position(|b| !ORDINARY[b as usize])
+        .unwrap_or(text.len())
 }
 
 /// Recursive-descent parser over the token list.
@@ -3049,6 +3146,27 @@ mod tests {
         let never = parse_for_run("cmd {1} {..-1}").unwrap();
         assert_eq!(never.arity().to_string(), "no number of arguments");
         assert!(parse("cmd {1} {..-1}").is_err());
+    }
+
+    #[test]
+    fn ordinary_runs_stop_at_everything_special() {
+        // Every character the lexer gives meaning to ends a run, as do
+        // whitespace, control characters and non-ASCII.
+        for c in "|&;'\"\\{}$`()<>*? \t\n\x01é\u{a0}".chars() {
+            let text = format!("ab{c}cd");
+            assert_eq!(ordinary_run(&text), 2, "{c:?}");
+        }
+        assert_eq!(
+            ordinary_run("./dir-name/trueZ.x_y+z=1,2@3~4%5^6#7!8[9]:"),
+            42
+        );
+        assert_eq!(ordinary_run(""), 0);
+        // Runs and single quotes give the same words as before.
+        assert_eq!(
+            argv("cmd a-b 'c d'e f'g'", &[]),
+            os(&["cmd", "a-b", "c de", "fg"])
+        );
+        assert_eq!(argv("cmd é'x'é ''", &[]), os(&["cmd", "éxé", ""]));
     }
 
     #[test]
