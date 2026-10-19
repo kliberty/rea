@@ -2,6 +2,39 @@
 
 Ideas that are designed or agreed on but not built yet. Newest first.
 
+## Gather the stub's hot code into fewer pages
+
+Low priority: worth more as a learning exercise than for speed (about 5 µs
+per run, against about 100 µs for the exec itself).
+
+`perf trace -F all --no-syscalls ~/.local/bin/ALIAS` on the static musl stub
+shows 10 page faults of its own, against 4 for a minimal C++ wrapper. Six of
+the extra ones are code and read-only data: the code that runs is spread
+across about 500 KB, and each fault maps at most one 64 KB window around it
+(the kernel's "fault-around"). One trace hit code at `0x7f30`, `0x1d8c0`,
+`0x20a00`, `0x63a28` and `0x6ffc8`, and read-only data at `0x84cf0`.
+
+Gathering the hot functions into one or two windows means telling the linker
+to place them together, with a symbol-ordering file (`--symbol-ordering-file`
+for lld, `--section-ordering-file` for recent GNU ld). Rust already puts each
+function in its own section, so ordering is possible. Steps:
+
+1. Build the stub with symbols: `CARGO_PROFILE_RELEASE_STRIP=false`.
+2. Run `perf trace -F all --no-syscalls` on an alias made from it.
+3. Map each faulting address to a function with `nm -n` on that build.
+   Better still, list every function a run executes (for example with
+   `perf record` or valgrind's callgrind), since the faults only show the
+   first function touched in each window.
+4. Write those symbols to an ordering file, link with it, and run the trace
+   again to count the windows.
+
+Also seen in the same trace, and harder to fix:
+
+- A fault just past the arena (`anon@0x496420`), probably musl's own globals,
+  which the linker places after the stub's 64 KiB arena. With the arena last
+  in `.bss` they would share the page already touched at startup.
+- A second stack page: some call chain goes deeper than one page.
+
 ## Creation-time flags
 
 Per-alias options chosen when the alias is created (`aliasmux new NAME
