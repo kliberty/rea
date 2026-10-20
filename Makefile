@@ -60,6 +60,20 @@ lint:
 install:
 	cargo install --locked --path crates/aliasmux --root $(PREFIX) $(TARGET_FLAGS)
 
+# make's own SHELL is /bin/sh and isn't taken from the environment, hence
+# printenv to get the login shell.
+COMPLETION_SHELL ?= $(notdir $(shell printenv SHELL))
+COMPLETION_FILE_bash := $(PREFIX)/share/bash-completion/completions/aliasmux
+COMPLETION_FILE_zsh  := $(PREFIX)/share/zsh/site-functions/_aliasmux
+COMPLETION_FILE_fish := $(PREFIX)/share/fish/vendor_completions.d/aliasmux.fish
+COMPLETION_FILE ?= $(COMPLETION_FILE_$(COMPLETION_SHELL))
+
+completions:
+	$(if $(COMPLETION_FILE),,$(error no completion location known for "$(COMPLETION_SHELL)"; set COMPLETION_FILE))
+	mkdir -p $(dir $(COMPLETION_FILE))
+	$(ALIASMUX) completions $(COMPLETION_SHELL) > $(COMPLETION_FILE).tmp
+	mv $(COMPLETION_FILE).tmp $(COMPLETION_FILE)
+
 # The static variants reuse the targets above with --target set. Target-
 # specific variables carry over to prerequisites, so `install` sees it too.
 build-static install-static: TARGET_FLAGS := --target $(STATIC_TARGET)
