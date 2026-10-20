@@ -6,8 +6,8 @@ edition.workspace = true
 
 # Two binaries, built side by side: `aliasmux` (src/main.rs), the tool that
 # creates aliases, and `aliasmux-stub` (src/bin/aliasmux-stub.rs), the
-# executable it copies and patches once per alias. clap is linked only into
-# `aliasmux`, since the stub never references it.
+# executable it copies and patches once per alias. clap and clap_complete are
+# linked only into `aliasmux`, since the stub never references them.
 
 # Constraint on change: the stub has `#![no_main]`, so a test build of it
 # would run the stub instead of a test harness. It has no tests of its own;
@@ -20,3 +20,4 @@ test = false
 [dependencies]
 aliasmux-core.workspace = true
 clap.workspace = true
+clap_complete.workspace = true

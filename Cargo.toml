@@ -11,6 +11,7 @@ edition = "2024"
 [workspace.dependencies]
 aliasmux-core = { path = "crates/core" }
 clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
 libc = "0.2.190"
 
 # Small, fast-starting static binaries. None of these change behavior.

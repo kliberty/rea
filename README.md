@@ -37,6 +37,17 @@ from a static build: they are all aliasmux needs.
 `aliasmux` looks for `aliasmux-stub` next to itself, and by default writes
 aliases into its own directory too; `--stub` and `-o DIR` override both.
 
+**Tab completion:** `aliasmux completions bash|zsh|fish` prints a completion
+script for subcommands, options and file names. For bash:
+
+```sh
+aliasmux completions bash > ~/.local/share/bash-completion/completions/aliasmux
+```
+
+`aliasmux completions --help` has the zsh and fish locations. The script is
+generated for the name the tool is run as, so a renamed copy (`rea
+completions bash`) completes under its own name; name the file after it too.
+
 **Upgrading:** `make install aliases`. The new stub differs from the old one,
 so every alias is rewritten onto it. `make uninstall` removes the two binaries
 and leaves the aliases, which keep working on their own.
