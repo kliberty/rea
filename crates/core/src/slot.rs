@@ -1,6 +1,6 @@
 //! Binary layout of the template slot in patched stub binaries.
 //!
-//! A stub contains one [`Slot`] in its read-only data. `aliasmux patch` copies
+//! A stub contains one [`Slot`] in its read-only data. `rea patch` copies
 //! the stub, finds the slot by its marker, and overwrites it with an alias's
 //! name and template. At run time the stub reads the slot back with [`decode`].
 //!
@@ -13,16 +13,22 @@
 //! | 20..20+CAP | data   | `name` + `\n` + `template`, zero padded    |
 //!
 //! Constraint on change: the static itself must be declared in the stub
-//! binary (src/bin/aliasmux-stub.rs), never in this crate. A static here would
-//! also be linked into the `aliasmux` tool, giving it a valid empty slot, and
+//! binary (src/bin/rea-stub.rs), never in this crate. A static here would
+//! also be linked into the `rea` tool, giving it a valid empty slot, and
 //! then `patch` could no longer tell the tool from a stub (and refuse to
 //! overwrite it).
 
 use std::fmt;
 
-/// Identifies the slot in a binary image. The `v1` is a format version: bump it
-/// if the layout ever changes, so old patchers can't misread new stubs.
-pub const MARKER: [u8; 16] = *b"aliasmux:slot:v1";
+/// Identifies the slot in a binary image. The final `1` is a format version:
+/// bump it if the layout ever changes, so old patchers can't misread new stubs.
+pub const MARKER: [u8; 16] = *b"rea:alias:slot:1";
+
+/// The marker in stubs built before the rename from aliasmux to rea. The
+/// layout is the same, so [`locate`] accepts it too: aliases made with the
+/// old tool are still listed, inspected, and recognized as aliases that
+/// `patch` may replace. New stubs only ever carry [`MARKER`].
+pub const LEGACY_MARKER: [u8; 16] = *b"aliasmux:slot:v1";
 
 /// Maximum payload size in bytes. Arbitrary: generous for one-line templates
 /// while keeping each stub small. Changing it changes the stub layout, so
@@ -65,7 +71,7 @@ impl fmt::Display for SlotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SlotError::Empty => f.write_str(
-                "this is an unpatched aliasmux stub; create aliases from it with `aliasmux patch`",
+                "this is an unpatched rea stub; create aliases from it with `rea patch`",
             ),
             SlotError::Corrupt(why) => write!(f, "corrupt alias slot: {why}"),
         }
@@ -133,14 +139,23 @@ pub fn encode(name: &str, template: &str) -> Result<Vec<u8>, String> {
 pub fn locate(image: &[u8]) -> Result<usize, String> {
     // Collect every marker position; there must be exactly one. Zero means
     // this isn't a stub; several would make "which one runs?" a guess.
-    let hits: Vec<usize> = image
-        .windows(MARKER.len())
-        .enumerate()
-        .filter(|(_, w)| *w == MARKER)
-        .map(|(i, _)| i)
-        .collect();
+    let find = |marker: [u8; 16]| -> Vec<usize> {
+        image
+            .windows(marker.len())
+            .enumerate()
+            .filter(|(_, w)| *w == marker)
+            .map(|(i, _)| i)
+            .collect()
+    };
+    // The legacy marker only counts when the current one is absent. The rea
+    // tool itself contains both (as the constants it compares against), and
+    // must still be told apart from a stub by its current-marker match alone.
+    let mut hits = find(MARKER);
+    if hits.is_empty() {
+        hits = find(LEGACY_MARKER);
+    }
     match hits.as_slice() {
-        [] => Err("no alias slot found (not an aliasmux stub?)".into()),
+        [] => Err("no alias slot found (not a rea stub?)".into()),
         &[offset] if offset + SIZE <= image.len() => Ok(offset),
         [_] => Err("alias slot is truncated".into()),
         _ => Err(format!(
@@ -205,5 +220,25 @@ mod tests {
         let mut twice = MARKER.repeat(2);
         twice.resize(SIZE * 3, 0);
         assert!(locate(&twice).unwrap_err().contains("2 alias slot markers"));
+    }
+
+    #[test]
+    fn finds_slots_with_the_legacy_marker() {
+        // An alias made by the tool before the rename: same layout, old marker.
+        let mut slot = encode("mkvize", "ffmpeg -i {1} {1}.mkv").unwrap();
+        slot[..LEGACY_MARKER.len()].copy_from_slice(&LEGACY_MARKER);
+        let mut image = vec![0xAAu8; 100];
+        image.extend_from_slice(&slot);
+        let offset = locate(&image).unwrap();
+        assert_eq!(offset, 100);
+        assert_eq!(
+            decode_at(&image, offset),
+            Ok(("mkvize", "ffmpeg -i {1} {1}.mkv"))
+        );
+        // With both, the current marker is the one found.
+        let mut both = LEGACY_MARKER.to_vec();
+        both.extend_from_slice(&MARKER);
+        both.resize(SIZE * 3, 0);
+        assert_eq!(locate(&both), Ok(LEGACY_MARKER.len()));
     }
 }

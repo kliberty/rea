@@ -317,7 +317,7 @@ fn new_replaces_non_alias_files_only_when_told_to() {
         let out = tool(&args!["new", name, "true", "-o", d]);
         assert_eq!(out.status.code(), Some(1), "{name}");
         assert!(
-            stderr(&out).contains("is not an aliasmux alias"),
+            stderr(&out).contains("is not a rea alias"),
             "{name}: {}",
             stderr(&out)
         );
@@ -471,11 +471,7 @@ fn the_tool_itself_is_refused_as_a_stub() {
         env!("CARGO_BIN_EXE_rea")
     ]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(
-        stderr(&out).contains("not an aliasmux stub"),
-        "{}",
-        stderr(&out)
-    );
+    assert!(stderr(&out).contains("not a rea stub"), "{}", stderr(&out));
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -649,7 +645,7 @@ fn template_syntax_is_in_the_long_help() {
             "{args:?}: {help}"
         );
     }
-    assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
+    assert!(stdout(&bin().arg("-h").output().unwrap()).contains("rea --help"));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! A generic alias executable with an empty template slot.
 //!
-//! `aliasmux new` and `aliasmux patch` copy this binary once per alias and
+//! `rea new` and `rea patch` copy this binary once per alias and
 //! write the alias into [`SLOT`]. Each copy is then a standalone executable:
 //! its name on disk doesn't matter, and nothing else is needed at run time.
 //!
@@ -183,9 +183,9 @@ static ALLOCATOR: Arena = Arena {
     bytes: UnsafeCell::new([0; ARENA_SIZE]),
 };
 
-/// The template slot that `aliasmux patch` overwrites in each copy.
+/// The template slot that `rea patch` overwrites in each copy.
 ///
-/// It must be a `static` in this binary, not in aliasmux-core (see the note
+/// It must be a `static` in this binary, not in rea-core (see the note
 /// in `slot.rs`). `#[used]` keeps it in the binary even if
 /// the optimizer could see through every read.
 #[used]
@@ -218,7 +218,7 @@ extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
         // Running the raw stub, or a damaged copy: explain, using the shell's
         // "not executable" status since there is nothing to run.
         Err(err) => {
-            eprintln!("aliasmux-stub: {err}");
+            eprintln!("rea-stub: {err}");
             126
         }
     }
