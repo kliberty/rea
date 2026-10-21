@@ -1,9 +1,9 @@
-# Shortcuts for building, installing and using aliasmux.
+# Shortcuts for building, installing and using rea.
 #
-# Run `make help` for the list. Every target wraps a cargo or aliasmux
+# Run `make help` for the list. Every target wraps a cargo or rea
 # command, so nothing here is required; it only saves remembering the flags.
 
-# Where `install` puts aliasmux and aliasmux-stub (in $(PREFIX)/bin). Override
+# Where `install` puts rea and rea-stub (in $(PREFIX)/bin). Override
 # with `make install PREFIX=...`. Arbitrary default: ~/.local/bin is on PATH in
 # most distributions and needs no root.
 PREFIX ?= $(HOME)/.local
@@ -14,7 +14,7 @@ BINDIR := $(PREFIX)/bin
 ALIASES ?= aliases.txt
 
 # musl target for the static build, for whatever machine runs make (x86_64,
-# aarch64, ...). Assumption: a Linux host, which is all aliasmux supports.
+# aarch64, ...). Assumption: a Linux host, which is all rea supports.
 STATIC_TARGET := $(shell uname -m)-unknown-linux-musl
 
 # Extra cargo flags; empty for a normal build, set to --target by the *-static
@@ -46,7 +46,7 @@ endif
 
 # The installed tool, which `aliases` uses so that aliases are made from the
 # installed stub (the one next to it), not from whatever is in target/.
-ALIASMUX := $(BINDIR)/rea
+REA := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
 .PHONY: help build build-static test lint install install-static uninstall aliases aliases-prune check-aliases clean
@@ -58,7 +58,7 @@ help:
 	@echo "make build-static    static (musl) release build"
 	@echo "make test            run all tests"
 	@echo "make lint            run clippy on everything"
-	@echo "make install         install aliasmux + aliasmux-stub into $(BINDIR)"
+	@echo "make install         install rea + rea-stub into $(BINDIR)"
 	@echo "make install-static  the same, statically linked (runs on any Linux of this arch)"
 	@echo "make uninstall       remove them again (aliases are left in place)"
 	@echo "make aliases         create/update the aliases in $(ALIASES), into $(BINDIR)"
@@ -81,7 +81,7 @@ lint:
 
 # --locked: use Cargo.lock, which `cargo install` otherwise ignores.
 # Both binaries belong to one package, so this installs them side by side,
-# which is where aliasmux looks for the stub.
+# which is where rea looks for the stub.
 install:
 	cargo install --locked --path crates/rea --root $(PREFIX) $(TARGET_FLAGS)
 
@@ -96,7 +96,7 @@ COMPLETION_FILE ?= $(COMPLETION_FILE_$(COMPLETION_SHELL))
 completions:
 	$(if $(COMPLETION_FILE),,$(error no completion location known for "$(COMPLETION_SHELL)"; set COMPLETION_FILE))
 	mkdir -p $(dir $(COMPLETION_FILE))
-	$(ALIASMUX) completions $(COMPLETION_SHELL) > $(COMPLETION_FILE).tmp
+	$(REA) completions $(COMPLETION_SHELL) > $(COMPLETION_FILE).tmp
 	mv $(COMPLETION_FILE).tmp $(COMPLETION_FILE)
 
 # The static variants reuse the targets above with --target set. Target-
@@ -121,15 +121,15 @@ uninstall:
 
 # Aliases go into $(BINDIR), next to the installed tool (its default).
 aliases:
-	$(ALIASMUX) patch $(ALIASES)
+	$(REA) patch $(ALIASES)
 
 aliases-prune:
-	$(ALIASMUX) patch $(ALIASES) --prune
+	$(REA) patch $(ALIASES) --prune
 
 # Uses the installed tool too, so it validates with the same parser the
 # installed aliases run.
 check-aliases:
-	$(ALIASMUX) check $(ALIASES)
+	$(REA) check $(ALIASES)
 
 clean:
 	cargo clean
