@@ -2,6 +2,26 @@
 
 Ideas that are designed or agreed on but not built yet. Newest first.
 
+## Small items
+
+- make clap wrap long help texts
+- can clap show conflicts? (`rea patch --prune backup.txt cpt` is
+  refused)
+
+## Add dry run flag for patch, and other patch improvements
+
+Show what will be updated and removed (especially with
+--replace-non-aliases).
+
+Useful with the dangerous snippet `rea patch --prune <(echo)` to remove
+everything.
+
+- Don't let the tool remove or overwrite its own binary or the stub
+  (autodetected or manually specified `--stub`)
+- Make the updated/written/removed/replaced more visible (especially when a
+  non-alias is **replaced**)
+    - Maybe give replaced its own count in the summary.
+
 ## Gather the stub's hot code into fewer pages
 
 Low priority: worth more as a learning exercise than for speed (about 5 µs
