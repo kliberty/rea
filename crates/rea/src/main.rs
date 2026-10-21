@@ -10,6 +10,6 @@ mod cli;
 /// Hand over to the command-line interface.
 fn main() {
     // Before any output, so `aliasmux list | head` ends quietly (see there).
-    aliasmux_core::run::restore_default_sigpipe();
+    rea_core::run::restore_default_sigpipe();
     cli::main();
 }

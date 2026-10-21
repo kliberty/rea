@@ -1,7 +1,7 @@
 //! The aliasmux command line: create, update, list and inspect aliases.
 //!
 //! An alias is a copy of the `aliasmux-stub` executable with its definition
-//! written into the stub's slot (see aliasmux_core::slot). Creating one needs
+//! written into the stub's slot (see rea_core::slot). Creating one needs
 //! no compiler: the definition is validated here, at creation time, with the
 //! same parser the alias runs, so a bad template never becomes an executable.
 
@@ -14,13 +14,13 @@ use std::path::{Path, PathBuf};
 use clap::{CommandFactory, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
-use aliasmux_core::{aliasfile, run_alias, slot, template};
+use rea_core::{aliasfile, run_alias, slot, template};
 
 /// Prefix for messages, and the program name in `--help`.
 const SELF_NAME: &str = env!("CARGO_PKG_NAME");
 
 /// File name of the stub, expected next to this executable by default.
-const STUB_NAME: &str = "aliasmux-stub";
+const STUB_NAME: &str = "rea-stub";
 
 /// Largest file that directory scans (`list`, `patch --prune`) will read when
 /// looking for aliases. Arbitrary, but far above any stub's size, so the limit
@@ -29,7 +29,7 @@ const SCAN_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// The template language, shown by `aliasmux --help`, `new --help` and
 /// `eval --help`. Constraint on change: keep it in step with the parser
-/// (aliasmux_core::template) and the README's syntax table.
+/// (rea_core::template) and the README's syntax table.
 const SYNTAX: &str = "\
 Template syntax:
   Words and quoting work as in sh: '...' is literal, \"...\" is literal except
@@ -352,7 +352,7 @@ fn eval(template: String, args: &[OsString]) -> ! {
     let source = if template == "-" {
         template_from_stdin().unwrap_or_else(|err| {
             fail(&err);
-            std::process::exit(aliasmux_core::USAGE_ERROR);
+            std::process::exit(rea_core::USAGE_ERROR);
         })
     } else {
         template
@@ -814,7 +814,7 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
         Ok(parsed) => parsed,
         Err(err) => {
             fail(&format!("invalid template: {}", err.render(&source)));
-            return aliasmux_core::USAGE_ERROR;
+            return rea_core::USAGE_ERROR;
         }
     };
     // Failed checks and unset variables don't stop the explanation: the plan
@@ -827,7 +827,7 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
         Ok(preview) => preview,
         Err(err) => {
             fail(&err.to_string());
-            return aliasmux_core::USAGE_ERROR;
+            return rea_core::USAGE_ERROR;
         }
     };
     // Stages are indented under their pipeline so the structure reads at a glance.
@@ -868,5 +868,5 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     for err in &problems {
         eprintln!("{SELF_NAME}: would not run: {err}");
     }
-    aliasmux_core::USAGE_ERROR
+    rea_core::USAGE_ERROR
 }

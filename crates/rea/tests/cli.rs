@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 
 /// A command for the binary under test.
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_aliasmux"))
+    Command::new(env!("CARGO_BIN_EXE_rea"))
 }
 
 /// Run an ad-hoc template and capture its output.
@@ -208,7 +208,7 @@ fn inherited_sigint_ignore_reaches_children() {
         template.replace('\'', r"'\''")
     );
     let out = Command::new("sh")
-        .args(["-c", &script, env!("CARGO_BIN_EXE_aliasmux")])
+        .args(["-c", &script, env!("CARGO_BIN_EXE_rea")])
         .output()
         .unwrap();
     assert_eq!(stdout(&out), "survived\n", "{}", stderr(&out));
@@ -293,7 +293,7 @@ fn new_validates_before_writing() {
     assert!(
         !tool(&args![
             "new",
-            "aliasmux-stub",
+            "rea-stub",
             "true",
             "-o",
             dir.to_str().unwrap()
@@ -311,8 +311,8 @@ fn new_replaces_non_alias_files_only_when_told_to() {
     let d = dir.to_str().unwrap();
     // An ordinary file, the tool itself, and the bare stub are all off limits.
     fs::write(dir.join("notes"), "precious").unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_aliasmux"), dir.join("tool-copy")).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_aliasmux-stub"), dir.join("stub-copy")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_rea"), dir.join("tool-copy")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_rea-stub"), dir.join("stub-copy")).unwrap();
     for name in ["notes", "tool-copy", "stub-copy"] {
         let out = tool(&args!["new", name, "true", "-o", d]);
         assert_eq!(out.status.code(), Some(1), "{name}");
@@ -468,7 +468,7 @@ fn the_tool_itself_is_refused_as_a_stub() {
         "-o",
         dir.to_str().unwrap(),
         "--stub",
-        env!("CARGO_BIN_EXE_aliasmux")
+        env!("CARGO_BIN_EXE_rea")
     ]);
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -600,7 +600,7 @@ fn chunked_names_with_back_index_and_rest() {
 fn word_repetition_and_alias_name() {
     // -I{@} repeats per argument; {0} is the alias name (ours, for eval).
     let out = eval("printf [%s] {0} -I{@}", &["a", "b"]);
-    assert_eq!(stdout(&out), "[aliasmux][-Ia][-Ib]");
+    assert_eq!(stdout(&out), "[rea][-Ia][-Ib]");
     // {@+} refuses to run with nothing to stand for.
     let none = eval("printf %s {@+}", &[]);
     assert_eq!(none.status.code(), Some(2));
@@ -659,7 +659,7 @@ fn closed_stdout_ends_quietly_instead_of_panicking() {
     // so the write is certain to happen after `head -c 1` has exited.
     let script = r#""$0" explain -t 'echo {@}' $(seq 100000 130000) | head -c 1 >/dev/null"#;
     let out = Command::new("sh")
-        .args(["-c", script, env!("CARGO_BIN_EXE_aliasmux")])
+        .args(["-c", script, env!("CARGO_BIN_EXE_rea")])
         .output()
         .unwrap();
     assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
@@ -946,7 +946,7 @@ fn completion_script_is_for_the_name_run_as() {
     let out = tool(&args!["completions", "bash"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
-        stdout(&out).contains("complete -F _aliasmux"),
+        stdout(&out).contains("complete -F _rea"),
         "{}",
         stdout(&out)
     );
@@ -954,7 +954,7 @@ fn completion_script_is_for_the_name_run_as() {
     // the shell looks scripts up by the command typed.
     let dir = scratch("completions");
     let renamed = dir.join("rea");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_aliasmux"), &renamed).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_rea"), &renamed).unwrap();
     let out = Command::new(&renamed)
         .args(["completions", "bash"])
         .output()

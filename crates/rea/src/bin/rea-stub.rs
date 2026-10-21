@@ -29,8 +29,8 @@
 //! Constraint on change: this binary must not rely on anything std
 //! initializes before `main`.
 //!
-//! [`run::ensure_standard_fds`]: aliasmux_core::run::ensure_standard_fds
-//! [`run::ignore_sigpipe`]: aliasmux_core::run::ignore_sigpipe
+//! [`run::ensure_standard_fds`]: rea_core::run::ensure_standard_fds
+//! [`run::ignore_sigpipe`]: rea_core::run::ignore_sigpipe
 
 #![no_main]
 
@@ -40,7 +40,7 @@ use std::ffi::{CStr, OsString, c_char, c_int};
 use std::os::unix::ffi::OsStringExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use aliasmux_core::slot::{self, Slot};
+use rea_core::slot::{self, Slot};
 
 /// Size of the stub's allocation arena.
 ///
@@ -214,7 +214,7 @@ extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
     // opaque, forcing real loads of whatever bytes the file holds at run time.
     let current: &Slot = std::hint::black_box(&SLOT);
     match slot::decode(current) {
-        Ok((name, template)) => aliasmux_core::run_stored_alias(name, template, &args),
+        Ok((name, template)) => rea_core::run_stored_alias(name, template, &args),
         // Running the raw stub, or a damaged copy: explain, using the shell's
         // "not executable" status since there is nothing to run.
         Err(err) => {

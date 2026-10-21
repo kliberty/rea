@@ -3,22 +3,6 @@
 version = 4
 
 [[package]]
-name = "aliasmux"
-version = "0.5.2"
-dependencies = [
- "aliasmux-core",
- "clap",
- "clap_complete",
-]
-
-[[package]]
-name = "aliasmux-core"
-version = "0.5.2"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -163,6 +147,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "rea"
+version = "0.5.2"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "rea-core",
+]
+
+[[package]]
+name = "rea-core"
+version = "0.5.2"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

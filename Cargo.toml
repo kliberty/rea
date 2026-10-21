@@ -1,15 +1,15 @@
-# aliasmux workspace: the runtime (crates/core) and the tool that creates
-# aliases from it (crates/aliasmux, which also builds the stub).
+# rea workspace: the runtime (crates/core) and the tool that creates
+# aliases from it (crates/rea, which also builds the stub).
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/aliasmux"]
+members = ["crates/core", "crates/rea"]
 
 [workspace.package]
 version = "0.5.2"
 edition = "2024"
 
 [workspace.dependencies]
-aliasmux-core = { path = "crates/core" }
+rea-core = { path = "crates/core" }
 clap = { version = "4.6.7", features = ["derive"] }
 clap_complete = "4.6.11"
 libc = "0.2.190"

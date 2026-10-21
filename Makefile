@@ -46,7 +46,7 @@ endif
 
 # The installed tool, which `aliases` uses so that aliases are made from the
 # installed stub (the one next to it), not from whatever is in target/.
-ALIASMUX := $(BINDIR)/aliasmux
+ALIASMUX := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
 .PHONY: help build build-static test lint install install-static uninstall aliases aliases-prune check-aliases clean
@@ -83,14 +83,14 @@ lint:
 # Both binaries belong to one package, so this installs them side by side,
 # which is where aliasmux looks for the stub.
 install:
-	cargo install --locked --path crates/aliasmux --root $(PREFIX) $(TARGET_FLAGS)
+	cargo install --locked --path crates/rea --root $(PREFIX) $(TARGET_FLAGS)
 
 # make's own SHELL is /bin/sh and isn't taken from the environment, hence
 # printenv to get the login shell.
 COMPLETION_SHELL ?= $(notdir $(shell printenv SHELL))
-COMPLETION_FILE_bash := $(PREFIX)/share/bash-completion/completions/aliasmux
-COMPLETION_FILE_zsh  := $(PREFIX)/share/zsh/site-functions/_aliasmux
-COMPLETION_FILE_fish := $(PREFIX)/share/fish/vendor_completions.d/aliasmux.fish
+COMPLETION_FILE_bash := $(PREFIX)/share/bash-completion/completions/rea
+COMPLETION_FILE_zsh  := $(PREFIX)/share/zsh/site-functions/_rea
+COMPLETION_FILE_fish := $(PREFIX)/share/fish/vendor_completions.d/rea.fish
 COMPLETION_FILE ?= $(COMPLETION_FILE_$(COMPLETION_SHELL))
 
 completions:
@@ -117,7 +117,7 @@ check-static-target:
 # Removes only the two binaries cargo installed; cargo doesn't know about the
 # aliases, and they keep working without the tool anyway.
 uninstall:
-	cargo uninstall --root $(PREFIX) aliasmux
+	cargo uninstall --root $(PREFIX) rea
 
 # Aliases go into $(BINDIR), next to the installed tool (its default).
 aliases:
