@@ -31,6 +31,14 @@ glibc version to match. It needs the target once:
 the exact command if it's missing). The plain `make install` links glibc
 dynamically, so its binaries need a compatible glibc wherever they go.
 
+`PIE=no` (e.g. `make install-static PIE=no`) builds binaries that aren't
+position-independent. Each alias call then skips the stub relocating itself,
+which is a good part of its remaining startup cost (on x86_64 musl, about 7k of
+12k user instructions, plus about 25k kernel ones). The trade-off is that the
+binary's own code always loads at the same address; the stack, heap and other
+mappings are still randomized. Switching `PIE` rebuilds everything, and a
+plain `make build PIE=no` puts its binaries in `target/<host triple>/release`.
+
 For a machine with no Rust at all, install there by copying the two binaries
 from a static build: they are all aliasmux needs.
 
