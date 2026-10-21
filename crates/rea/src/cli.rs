@@ -427,16 +427,11 @@ impl Stub {
                 path.display()
             )
         })?;
-        let offset = slot::locate(&image).map_err(|err| format!("{}: {err}", path.display()))?;
-        // A marker alone is not proof of a slot: this program carries the
-        // marker bytes too, as a constant. A real stub's slot is empty, or
-        // holds a valid alias (any alias also works as a stub).
-        if let Err(slot::SlotError::Corrupt(why)) = slot::decode_at(&image, offset) {
-            return Err(format!(
-                "{}: not a rea stub (marker found, but {why})",
-                path.display()
-            ));
-        }
+        // locate() only accepts a well-formed slot, so this program, which
+        // carries the marker bytes as a constant, is refused here. A slot
+        // that holds an alias is fine: any alias also works as a stub.
+        let offset = slot::locate(&image)
+            .map_err(|err| format!("{}: not a rea stub ({err})", path.display()))?;
         Ok(Stub { image, offset })
     }
 
@@ -753,15 +748,13 @@ fn inspect(files: &[PathBuf]) -> i32 {
 fn read_definition(file: &Path) -> Result<(String, String), String> {
     let image = fs::read(file).map_err(|err| format!("cannot read {}: {err}", file.display()))?;
     // Same lookup the stub does at run time, but on the file instead of memory.
-    let offset = slot::locate(&image).map_err(|err| format!("{}: {err}", file.display()))?;
+    // locate() only accepts a well-formed slot, so a copy of the marker bytes
+    // with other data after it (this program has one) isn't mistaken for a
+    // damaged alias.
+    let offset = slot::locate(&image)
+        .map_err(|err| format!("{}: not a rea alias ({err})", file.display()))?;
     match slot::decode_at(&image, offset) {
         Ok((name, template)) => Ok((name.to_owned(), template.to_owned())),
-        // A marker with garbage after it is a false positive (this program
-        // carries the marker bytes as a constant), not a damaged alias.
-        Err(slot::SlotError::Corrupt(why)) => Err(format!(
-            "{}: not a rea alias (marker found, but {why})",
-            file.display()
-        )),
         Err(err) => Err(format!("{}: {err}", file.display())),
     }
 }
