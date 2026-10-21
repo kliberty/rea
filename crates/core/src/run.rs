@@ -96,7 +96,7 @@ fn command_for(argv: &Argv) -> Command {
 /// inherited. If it was inherited *ignored*, it stays ignored for the target,
 /// which is what POSIX shells do with signals ignored on entry, and what the
 /// supervisor does for SIGINT (see `shield_from_terminal_signals`). The
-/// `aliasmux eval` path restores the default at startup, so it gets the
+/// `rea eval` path restores the default at startup, so it gets the
 /// default here too.
 pub fn exec_single(alias: &str, argv: &Argv) -> ! {
     // A NUL can't reach an exec, so a word containing one (only possible from
@@ -243,10 +243,10 @@ pub fn run_plan(alias: &str, plan: &Plan) -> Outcome {
 ///
 /// Rust's std sets SIGPIPE to "ignored" before `main`, so writing to a closed
 /// pipe returns an error instead, and `println!` turns that error into a
-/// panic: `aliasmux list | head` would print "failed printing to stdout".
+/// panic: `rea list | head` would print "failed printing to stdout".
 /// Restoring the default makes the process simply end, as `ls | head` does.
 ///
-/// Only the `aliasmux` tool needs this. The stub skips std's runtime setup
+/// Only the `rea` tool needs this. The stub skips std's runtime setup
 /// (it has no `main` of std's), so its SIGPIPE starts at whatever it
 /// inherited, and the commands it starts get SIGPIPE back at its default from
 /// `Command` either way (see `exec_single`).

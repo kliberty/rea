@@ -1,23 +1,23 @@
 [package]
-name = "aliasmux"
+name = "rea"
 description = "Command aliases with numbered arguments and real pipelines, no shell"
 version.workspace = true
 edition.workspace = true
 
-# Two binaries, built side by side: `aliasmux` (src/main.rs), the tool that
-# creates aliases, and `aliasmux-stub` (src/bin/aliasmux-stub.rs), the
+# Two binaries, built side by side: `rea` (src/main.rs), the tool that
+# creates aliases, and `rea-stub` (src/bin/rea-stub.rs), the
 # executable it copies and patches once per alias. clap and clap_complete are
-# linked only into `aliasmux`, since the stub never references them.
+# linked only into `rea`, since the stub never references them.
 
 # Constraint on change: the stub has `#![no_main]`, so a test build of it
 # would run the stub instead of a test harness. It has no tests of its own;
 # the integration tests run real aliases made from it.
 [[bin]]
-name = "aliasmux-stub"
-path = "src/bin/aliasmux-stub.rs"
+name = "rea-stub"
+path = "src/bin/rea-stub.rs"
 test = false
 
 [dependencies]
-aliasmux-core.workspace = true
+rea-core.workspace = true
 clap.workspace = true
 clap_complete.workspace = true

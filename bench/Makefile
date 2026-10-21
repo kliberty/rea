@@ -17,11 +17,11 @@ short/ $(LONG)/ build/:
 short/trueZ $(LONG)/trueZ: trueZ short/ $(LONG)/
 	cp $< $@
 
-trueZ-%-short: aliasmux-stub-% short/trueZ
-	aliasmux new -o . --stub $< $@ ./short/trueZ
+trueZ-%-short: rea-stub-% short/trueZ
+	rea new -o . --stub $< $@ ./short/trueZ
 
-trueZ-%-long: aliasmux-stub-% $(LONG)/trueZ
-	aliasmux new -o . --stub $< $@ ./$(LONG)/trueZ
+trueZ-%-long: rea-stub-% $(LONG)/trueZ
+	rea new -o . --stub $< $@ ./$(LONG)/trueZ
 
 tz-perf-%: trueZ-%-short trueZ-%-long
 	$(PERF) ./trueZ-$*-short | tee $@-short.perf.json
@@ -43,16 +43,24 @@ build/rev-%: FORCE | build/
 # Without this, make deletes the rev files as intermediates after each run.
 .PRECIOUS: build/rev-%
 
-aliasmux-stub-%: BDIR = build/build-$*
-aliasmux-stub-%: build/rev-% | build/
+# Revisions from before the rename to rea build aliasmux-stub instead of
+# rea-stub, so copy whichever exists. rea can patch either: it still
+# recognizes the old slot marker.
+rea-stub-%: BDIR = build/build-$*
+rea-stub-%: build/rev-% | build/
 	mkdir -p $(BDIR) && git -C .. archive $$(cat $<) | tar -x -C $(BDIR)
-	$(MAKE) -C $(BDIR) build-static && cp $(BDIR)/target/x86_64-unknown-linux-musl/release/aliasmux-stub $@
+	$(MAKE) -C $(BDIR) build-static
+	for s in rea-stub aliasmux-stub; do \
+		f=$(BDIR)/target/x86_64-unknown-linux-musl/release/$$s; \
+		if [ -e "$$f" ]; then cp "$$f" $@; exit 0; fi; \
+	done; \
+	echo "$*: no stub found in $(BDIR)" >&2; exit 1
 
 
 no-pie:
 	$(MAKE) perfs RUSTFLAGS="-C relocation-model=static" -B
-	for i in *.json; do aliasmux eval 'mv {1} {1:.}{:N}' "$$i" || exit; done
-	for i in *.perf; do aliasmux eval 'mv {1} {1:.}-no-pie.perf.json{:N}' "$$i" || exit; done
+	for i in *.json; do rea eval 'mv {1} {1:.}{:N}' "$$i" || exit; done
+	for i in *.perf; do rea eval 'mv {1} {1:.}-no-pie.perf.json{:N}' "$$i" || exit; done
 
 no-pie-compare: clean
 	$(MAKE) -B no-pie perfs
@@ -60,6 +68,6 @@ no-pie-compare: clean
 	./perfdiff.py
 
 clean:
-	-rm trueZ-* aliasmux-stub-*
+	-rm trueZ-* rea-stub-*
 	-rm -r short $(LONG)
 	-rm *.json

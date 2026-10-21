@@ -1,14 +1,14 @@
-# aliasmux
+# rea
 
 Command aliases with numbered arguments and real pipelines, and no shell
 involved. The successor to `alias_maker.py` (2012).
 
-Each alias is a small standalone executable: a copy of `aliasmux-stub` with
+Each alias is a small standalone executable: a copy of `rea-stub` with
 the alias written into it. Creating one needs no compiler, and the alias needs
 nothing else at run time. Copy it anywhere, under any name, and it still runs.
 
 ```
-$ aliasmux new flif270 'flif -d {1} - | convert -rotate 270 - - | flif -E 14 - {1}.rot.flif && mv {1}.rot.flif {1}'
+$ rea new flif270 'flif -d {1} - | convert -rotate 270 - - | flif -E 14 - {1}.rot.flif && mv {1}.rot.flif {1}'
 created /home/you/.local/bin/flif270
 $ flif270 'holiday photo.flif'
 ```
@@ -16,7 +16,7 @@ $ flif270 'holiday photo.flif'
 ## Install
 
 ```
-make install          # aliasmux + aliasmux-stub into ~/.local/bin
+make install          # rea + rea-stub into ~/.local/bin
 make aliases          # create/update the aliases in aliases.txt, there too
 ```
 
@@ -40,31 +40,37 @@ mappings are still randomized. Switching `PIE` rebuilds everything, and a
 plain `make build PIE=no` puts its binaries in `target/<host triple>/release`.
 
 For a machine with no Rust at all, install there by copying the two binaries
-from a static build: they are all aliasmux needs.
+from a static build: they are all rea needs.
 
-`aliasmux` looks for `aliasmux-stub` next to itself, and by default writes
+`rea` looks for `rea-stub` next to itself, and by default writes
 aliases into its own directory too; `--stub` and `-o DIR` override both.
 
-**Tab completion:** `aliasmux completions bash|zsh|fish` prints a completion
+**Tab completion:** `rea completions bash|zsh|fish` prints a completion
 script for subcommands, options and file names. For bash:
 
 ```sh
-aliasmux completions bash > ~/.local/share/bash-completion/completions/aliasmux
+rea completions bash > ~/.local/share/bash-completion/completions/rea
 ```
 
-`aliasmux completions --help` has the zsh and fish locations. The script is
+`rea completions --help` has the zsh and fish locations. The script is
 generated for the name the tool is run as, so a renamed copy or a symlink
-completes under its own name; name the file after it too. An alias for
-aliasmux (`aliasmux new am aliasmux`) runs it as `aliasmux`, so it gets the
-`aliasmux` script; in bash, `complete -F _aliasmux am` after loading it covers
-the alias too.
+completes under its own name; name the file after it too. An alias for rea
+(`rea new r rea`) runs it as `rea`, so it gets the `rea` script; in bash,
+`complete -F _rea r` after loading it covers the alias too.
 
 **Upgrading:** `make install aliases`. The new stub differs from the old one,
 so every alias is rewritten onto it. `make uninstall` removes the two binaries
 and leaves the aliases, which keep working on their own.
 
+**Upgrading from aliasmux:** rea was called aliasmux before. `make install
+aliases` installs rea and rewrites the aliases in your alias file onto
+`rea-stub`. rea recognizes aliases made by rea, so replacing them needs
+no `--replace-non-aliases`, and any it doesn't rewrite keep working as they
+are. The old binaries stay installed until you remove them with
+`cargo uninstall --root ~/.local aliasmux`.
+
 Without make, `make install` is
-`cargo install --locked --path crates/aliasmux --root ~/.local`
+`cargo install --locked --path crates/rea --root ~/.local`
 (`--locked` makes cargo use `Cargo.lock`, which `cargo install` otherwise
 ignores).
 
@@ -73,7 +79,7 @@ ignores).
 One at a time:
 
 ```
-aliasmux new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
+rea new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
 ```
 
 Or from an alias file, one `name = template` per line, `#` for comments:
@@ -86,10 +92,10 @@ ll      = ls -la
 ```
 
 ```
-aliasmux check aliases.txt            # validate only
-aliasmux patch aliases.txt            # create or update them all
-aliasmux patch aliases.txt --prune    # ...and remove aliases no longer in the file
-aliasmux patch aliases.txt mkvize     # just one
+rea check aliases.txt                 # validate only
+rea patch aliases.txt                 # create or update them all
+rea patch aliases.txt --prune         # ...and remove aliases no longer in the file
+rea patch aliases.txt mkvize          # just one
 ```
 
 - **Validated at creation.** A template is parsed when the alias is created,
@@ -99,21 +105,21 @@ aliasmux patch aliases.txt mkvize     # just one
 - **Only changes are written.** An alias whose definition is unchanged is left
   alone, timestamp included; `patch` lists only what it created, updated or
   removed.
-- **Other files are safe.** An existing file is replaced only if it is an
-  aliasmux alias. Anything else (another program, the tool, the stub) needs
+- **Other files are safe.** An existing file is replaced only if it is a
+  rea alias. Anything else (another program, the tool, the stub) needs
   `--replace-non-aliases`. `--prune` only ever removes aliases.
 
-The aliases themselves are the record. `aliasmux list DIR` prints the aliases
+The aliases themselves are the record. `rea list DIR` prints the aliases
 in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
 by `patch aliases.txt` recreates them exactly.
 
 ```
-aliasmux list [DIR]                  # aliases in DIR, as an alias file
-aliasmux inspect FILE...             # definition stored in alias executables
-aliasmux explain FILE 'a b.flif'     # what an alias would run, quoted
-aliasmux explain -t TEMPLATE ARGS    # the same for a template
-aliasmux eval TEMPLATE ARGS          # run a template directly, to try it out
-aliasmux eval - ARGS                 # the same, with the template read from stdin
+rea list [DIR]                       # aliases in DIR, as an alias file
+rea inspect FILE...                  # definition stored in alias executables
+rea explain FILE 'a b.flif'          # what an alias would run, quoted
+rea explain -t TEMPLATE ARGS         # the same for a template
+rea eval TEMPLATE ARGS               # run a template directly, to try it out
+rea eval - ARGS                      # the same, with the template read from stdin
 ```
 
 `explain` shows the commands even when a file check would stop them, and
@@ -123,12 +129,12 @@ template read, and their values. Its exit status is the alias's own: 2 for a
 failed check, an unset variable, a wrong argument count or an invalid template.
 
 `eval -` reads one line from stdin as the template, which saves a layer of
-shell quoting (`aliasmux eval - < template.txt`, or a heredoc). Reading it uses
+shell quoting (`rea eval - < template.txt`, or a heredoc). Reading it uses
 up stdin, so the template's own commands then see stdin at end of file.
 
 ## Template syntax
 
-`aliasmux --help` prints this too.
+`rea --help` prints this too.
 
 | Syntax | Meaning |
 |---|---|
@@ -196,7 +202,7 @@ up stdin, so the template's own commands then see stdin at end of file.
   never split, and it takes checks and modifiers. Unset or empty is an error
   before anything runs, and `explain` shows the values it used. Since the
   value is one word, `CC="zig c++"` names a program called `zig c++`; for a
-  command with arguments, make a wrapper (`aliasmux new -o . zigcxx 'zig c++'`)
+  command with arguments, make a wrapper (`rea new -o . zigcxx 'zig c++'`)
   and point the variable at that.
 - A single command with no references (not even `{0}` or `{$NAME}`) gets
   `{@}` appended, like a shell alias (`ll` above).
@@ -227,8 +233,8 @@ up stdin, so the template's own commands then see stdin at end of file.
 
 - `crates/core`: the runtime, i.e. template language, alias file format,
   process execution, and the slot format that holds an alias in its stub.
-- `crates/aliasmux`: the `aliasmux` tool (`src/main.rs`, `src/cli.rs`) and the
-  stub (`src/bin/aliasmux-stub.rs`), built side by side.
+- `crates/rea`: the `rea` tool (`src/main.rs`, `src/cli.rs`) and the
+  stub (`src/bin/rea-stub.rs`), built side by side.
 
 Earlier designs (a multicall binary, a shared-library variant with a C stub,
 and separately compiled per-alias binaries) are in the git history.

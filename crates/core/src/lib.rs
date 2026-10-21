@@ -1,7 +1,7 @@
-//! Runtime for aliasmux aliases: the template language, the alias file format,
+//! Runtime for rea aliases: the template language, the alias file format,
 //! process execution, and the slot format that holds an alias in its stub.
 //!
-//! Each alias is a copy of the `aliasmux-stub` executable with one alias
+//! Each alias is a copy of the `rea-stub` executable with one alias
 //! written into its slot; the stub reads it back and calls [`run_alias`].
 
 pub mod aliasfile;
@@ -23,7 +23,7 @@ pub fn run_alias(name: &str, source: &str, args: &[OsString]) -> ! {
     run_parsed(name, source, args, template::parse(source));
 }
 
-/// Run the template stored in an alias, which `aliasmux new` or `patch`
+/// Run the template stored in an alias, which `rea new` or `patch`
 /// already validated.
 ///
 /// Like [`run_alias`], but parses with [`template::parse_for_run`], which
@@ -42,7 +42,7 @@ fn run_parsed(
     parsed: Result<template::Template, template::ParseError>,
 ) -> ! {
     // Templates are validated when an alias is created, so this only fails
-    // for ad-hoc templates (`aliasmux eval`) or a damaged stub.
+    // for ad-hoc templates (`rea eval`) or a damaged stub.
     let parsed = parsed.unwrap_or_else(|err| {
         eprintln!("{name}: invalid template: {}", err.render(source));
         std::process::exit(USAGE_ERROR);

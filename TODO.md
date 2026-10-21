@@ -37,7 +37,7 @@ Also seen in the same trace, and harder to fix:
 
 ## Creation-time flags
 
-Per-alias options chosen when the alias is created (`aliasmux new NAME
+Per-alias options chosen when the alias is created (`rea new NAME
 TEMPLATE --flag`, or in the alias file) and stored in the alias itself, so
 they travel with it like the template does.
 
@@ -53,7 +53,7 @@ decided (`pipeline_outcome` in `crates/core/src/run.rs`):
 
 | Mode | Pipeline status | `false \| true` | `yes \| head -1` |
 |---|---|---|---|
-| `aliasmux` (default, today's rule) | rightmost failing stage, but an upstream stage killed by SIGPIPE counts as success | 1 | 0 |
+| `rea` (default, today's rule) | rightmost failing stage, but an upstream stage killed by SIGPIPE counts as success | 1 | 0 |
 | `bash` | rightmost failing stage, SIGPIPE included: exactly `set -o pipefail` | 1 | 141 |
 | `last` | the last stage alone, as in plain sh | 0 | 0 |
 
@@ -66,7 +66,7 @@ Things to settle:
 
 - **Storage.** The slot payload is `name\ntemplate`. Flags need somewhere to
   live, which means a new payload layout and a slot format version bump
-  (`aliasmux:slot:v2`), or a backwards-compatible extension of v1.
+  (`rea:alias:slot:2`), or a backwards-compatible extension of v1.
 - **Alias file syntax**, e.g. `name [--runtime-file-check] = template`.
 - **Round trip.** `list` and `inspect` must print the flags too, so that
   `list DIR > aliases.txt` followed by `patch aliases.txt` still recreates

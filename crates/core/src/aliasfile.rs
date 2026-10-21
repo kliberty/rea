@@ -46,7 +46,7 @@ fn split_line(raw: &str) -> Option<Result<(&str, &str), &'static str>> {
 /// Check that a name is usable as a file name on `PATH`.
 ///
 /// Returns an error message, or `None` if the name is fine. Used for names from
-/// the alias file and from `aliasmux new` alike, so both accept exactly the same
+/// the alias file and from `rea new` alike, so both accept exactly the same
 /// names.
 pub fn name_problem(name: &str) -> Option<String> {
     // The character set is an arbitrary conservative choice: safe in file names

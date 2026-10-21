@@ -1,7 +1,7 @@
 //! End-to-end tests: run the real binary and check processes, pipes, exit
 //! statuses and signals.
 //!
-//! Runtime behavior is tested through `aliasmux eval TEMPLATE ARGS...`, which
+//! Runtime behavior is tested through `rea eval TEMPLATE ARGS...`, which
 //! runs a template exactly as a patched alias would. Assumption: a POSIX
 //! userland is present (printf, sort, tr, cat, tee, mv, yes, head, sh, ls).
 
@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 
 /// A command for the binary under test.
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_aliasmux"))
+    Command::new(env!("CARGO_BIN_EXE_rea"))
 }
 
 /// Run an ad-hoc template and capture its output.
@@ -39,7 +39,7 @@ fn stderr(out: &Output) -> String {
 ///
 /// Tests run in parallel, so each must pass a different `tag`.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("aliasmux-test-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rea-test-{}-{tag}", std::process::id()));
     // Leftovers from an aborted run with the same pid are possible; start clean.
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create scratch dir");
@@ -95,10 +95,10 @@ fn upstream_sigpipe_is_success_and_does_not_hang() {
 #[test]
 fn missing_command_is_127() {
     // Both via the direct exec path and inside a pipeline.
-    let single = eval("no-such-command-aliasmux", &[]);
+    let single = eval("no-such-command-rea", &[]);
     assert_eq!(single.status.code(), Some(127));
-    assert!(stderr(&single).contains("no-such-command-aliasmux: command not found"));
-    let piped = eval("no-such-command-aliasmux | cat", &[]);
+    assert!(stderr(&single).contains("no-such-command-rea: command not found"));
+    let piped = eval("no-such-command-rea | cat", &[]);
     assert_eq!(piped.status.code(), Some(127));
 }
 
@@ -208,7 +208,7 @@ fn inherited_sigint_ignore_reaches_children() {
         template.replace('\'', r"'\''")
     );
     let out = Command::new("sh")
-        .args(["-c", &script, env!("CARGO_BIN_EXE_aliasmux")])
+        .args(["-c", &script, env!("CARGO_BIN_EXE_rea")])
         .output()
         .unwrap();
     assert_eq!(stdout(&out), "survived\n", "{}", stderr(&out));
@@ -230,7 +230,7 @@ fn default_sigint_still_reaches_children() {
 // this package into the same directory).
 // ---------------------------------------------------------------------------
 
-/// Run `aliasmux` with arguments and capture its output.
+/// Run `rea` with arguments and capture its output.
 fn tool(args: &[&OsStr]) -> Output {
     bin().args(args).output().expect("binary runs")
 }
@@ -293,7 +293,7 @@ fn new_validates_before_writing() {
     assert!(
         !tool(&args![
             "new",
-            "aliasmux-stub",
+            "rea-stub",
             "true",
             "-o",
             dir.to_str().unwrap()
@@ -311,13 +311,13 @@ fn new_replaces_non_alias_files_only_when_told_to() {
     let d = dir.to_str().unwrap();
     // An ordinary file, the tool itself, and the bare stub are all off limits.
     fs::write(dir.join("notes"), "precious").unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_aliasmux"), dir.join("tool-copy")).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_aliasmux-stub"), dir.join("stub-copy")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_rea"), dir.join("tool-copy")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_rea-stub"), dir.join("stub-copy")).unwrap();
     for name in ["notes", "tool-copy", "stub-copy"] {
         let out = tool(&args!["new", name, "true", "-o", d]);
         assert_eq!(out.status.code(), Some(1), "{name}");
         assert!(
-            stderr(&out).contains("is not an aliasmux alias"),
+            stderr(&out).contains("is not a rea alias"),
             "{name}: {}",
             stderr(&out)
         );
@@ -458,7 +458,7 @@ fn list_output_is_an_alias_file_that_recreates_the_aliases() {
 
 #[test]
 fn the_tool_itself_is_refused_as_a_stub() {
-    // aliasmux carries the marker bytes in its patching code. Treating that as
+    // rea carries the marker bytes in its patching code. Treating that as
     // a slot would overwrite 4 KiB of the program, so it must refuse.
     let dir = scratch("stub-guard");
     let out = tool(&args![
@@ -468,14 +468,10 @@ fn the_tool_itself_is_refused_as_a_stub() {
         "-o",
         dir.to_str().unwrap(),
         "--stub",
-        env!("CARGO_BIN_EXE_aliasmux")
+        env!("CARGO_BIN_EXE_rea")
     ]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(
-        stderr(&out).contains("not an aliasmux stub"),
-        "{}",
-        stderr(&out)
-    );
+    assert!(stderr(&out).contains("not a rea stub"), "{}", stderr(&out));
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -510,7 +506,7 @@ fn explain_reads_an_alias_executable() {
 // `eval -`: the template read from stdin.
 // ---------------------------------------------------------------------------
 
-/// Run `aliasmux eval - ARGS...` with `input` on stdin and capture its output.
+/// Run `rea eval - ARGS...` with `input` on stdin and capture its output.
 fn eval_stdin(input: &[u8], args: &[&str]) -> Output {
     use std::io::Write;
     use std::process::Stdio;
@@ -600,7 +596,7 @@ fn chunked_names_with_back_index_and_rest() {
 fn word_repetition_and_alias_name() {
     // -I{@} repeats per argument; {0} is the alias name (ours, for eval).
     let out = eval("printf [%s] {0} -I{@}", &["a", "b"]);
-    assert_eq!(stdout(&out), "[aliasmux][-Ia][-Ib]");
+    assert_eq!(stdout(&out), "[rea][-Ia][-Ib]");
     // {@+} refuses to run with nothing to stand for.
     let none = eval("printf %s {@+}", &[]);
     assert_eq!(none.status.code(), Some(2));
@@ -649,17 +645,17 @@ fn template_syntax_is_in_the_long_help() {
             "{args:?}: {help}"
         );
     }
-    assert!(stdout(&bin().arg("-h").output().unwrap()).contains("aliasmux --help"));
+    assert!(stdout(&bin().arg("-h").output().unwrap()).contains("rea --help"));
 }
 
 #[test]
 fn closed_stdout_ends_quietly_instead_of_panicking() {
-    // Like any Unix tool, `aliasmux explain ... | head` must just stop when the
+    // Like any Unix tool, `rea explain ... | head` must just stop when the
     // reader goes away. The output (~200 KB) is far larger than a pipe buffer,
     // so the write is certain to happen after `head -c 1` has exited.
     let script = r#""$0" explain -t 'echo {@}' $(seq 100000 130000) | head -c 1 >/dev/null"#;
     let out = Command::new("sh")
-        .args(["-c", script, env!("CARGO_BIN_EXE_aliasmux")])
+        .args(["-c", script, env!("CARGO_BIN_EXE_rea")])
         .output()
         .unwrap();
     assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
@@ -805,18 +801,15 @@ fn env_references_at_run_time() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "hello world|");
     // Unset: nothing runs, not even the steps before it.
-    let template = format!(
-        "touch {} && echo {{$ALIASMUX_TEST_UNSET}}",
-        marker.display()
-    );
+    let template = format!("touch {} && echo {{$REA_TEST_UNSET}}", marker.display());
     let out = bin()
         .args(["eval", &template])
-        .env_remove("ALIASMUX_TEST_UNSET")
+        .env_remove("REA_TEST_UNSET")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        stderr(&out).contains("{$ALIASMUX_TEST_UNSET} is not set"),
+        stderr(&out).contains("{$REA_TEST_UNSET} is not set"),
         "{}",
         stderr(&out)
     );
@@ -942,11 +935,11 @@ fn alias_handles_arguments_beyond_its_arena() {
 
 #[test]
 fn completion_script_is_for_the_name_run_as() {
-    // The plain binary: the script registers itself for `aliasmux`.
+    // The plain binary: the script registers itself for `rea`.
     let out = tool(&args!["completions", "bash"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
-        stdout(&out).contains("complete -F _aliasmux"),
+        stdout(&out).contains("complete -F _rea"),
         "{}",
         stdout(&out)
     );
@@ -954,7 +947,7 @@ fn completion_script_is_for_the_name_run_as() {
     // the shell looks scripts up by the command typed.
     let dir = scratch("completions");
     let renamed = dir.join("rea");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_aliasmux"), &renamed).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_rea"), &renamed).unwrap();
     let out = Command::new(&renamed)
         .args(["completions", "bash"])
         .output()

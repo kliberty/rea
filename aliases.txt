@@ -1,4 +1,4 @@
-# Example alias file. Create the aliases with: aliasmux patch aliases.txt
+# Example alias file. Create the aliases with: rea patch aliases.txt
 #
 # One per line, `name = template`.
 #
@@ -8,7 +8,7 @@
 # {2..}, {..-1}  slices, stopping before the end: from the 2nd / all but the last
 # | && || ;      pipes and sequencing, as in sh
 #
-# `aliasmux --help` has the full syntax.
+# `rea --help` has the full syntax.
 #
 # Quote with '...' or "..." as in sh; references still work inside "...".
 # A single command with no references gets its arguments appended (like a

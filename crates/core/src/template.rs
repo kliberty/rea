@@ -50,7 +50,7 @@
 //! since sh expands them there. Accepting them silently would be worse: a
 //! template written as `ffmpeg -i "$1"` would hand a literal `$1` to ffmpeg.
 //!
-//! `aliasmux new` and `patch` run this parser when an alias is created, so
+//! `rea new` and `patch` run this parser when an alias is created, so
 //! syntax errors (and templates that no argument count could satisfy) surface
 //! then, not when the alias first runs.
 
@@ -1520,7 +1520,7 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
 ///
 /// Why bother: that search, and the formatting machinery it pulled in, were
 /// most of the instructions and a good share of the page faults of an alias
-/// run, all spent re-proving what `aliasmux new` had already checked.
+/// run, all spent re-proving what `rea new` had already checked.
 ///
 /// # Errors
 ///
@@ -2759,7 +2759,7 @@ mod tests {
     ///
     /// Tests run in parallel, so each must pass a different `tag`.
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("aliasmux-core-{}-{tag}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rea-core-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

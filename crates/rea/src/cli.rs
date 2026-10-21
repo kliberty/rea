@@ -1,7 +1,7 @@
-//! The aliasmux command line: create, update, list and inspect aliases.
+//! The rea command line: create, update, list and inspect aliases.
 //!
-//! An alias is a copy of the `aliasmux-stub` executable with its definition
-//! written into the stub's slot (see aliasmux_core::slot). Creating one needs
+//! An alias is a copy of the `rea-stub` executable with its definition
+//! written into the stub's slot (see rea_core::slot). Creating one needs
 //! no compiler: the definition is validated here, at creation time, with the
 //! same parser the alias runs, so a bad template never becomes an executable.
 
@@ -14,22 +14,22 @@ use std::path::{Path, PathBuf};
 use clap::{CommandFactory, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
-use aliasmux_core::{aliasfile, run_alias, slot, template};
+use rea_core::{aliasfile, run_alias, slot, template};
 
 /// Prefix for messages, and the program name in `--help`.
 const SELF_NAME: &str = env!("CARGO_PKG_NAME");
 
 /// File name of the stub, expected next to this executable by default.
-const STUB_NAME: &str = "aliasmux-stub";
+const STUB_NAME: &str = "rea-stub";
 
 /// Largest file that directory scans (`list`, `patch --prune`) will read when
 /// looking for aliases. Arbitrary, but far above any stub's size, so the limit
 /// only spares reading big unrelated files that happen to share the directory.
 const SCAN_LIMIT: u64 = 64 * 1024 * 1024;
 
-/// The template language, shown by `aliasmux --help`, `new --help` and
+/// The template language, shown by `rea --help`, `new --help` and
 /// `eval --help`. Constraint on change: keep it in step with the parser
-/// (aliasmux_core::template) and the README's syntax table.
+/// (rea_core::template) and the README's syntax table.
 const SYNTAX: &str = "\
 Template syntax:
   Words and quoting work as in sh: '...' is literal, \"...\" is literal except
@@ -86,21 +86,21 @@ Template syntax:
   passed through; quote or escape them to pass them literally.
 
 Examples:
-  aliasmux new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
-  aliasmux new cpto 'cp -t {-1} {@+}'
-  aliasmux new incl 'gcc -I{@} -c {-1}'
-  aliasmux new relink 'rm -f {@} && symlink {-1} {@}'
-  aliasmux new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'
-  aliasmux new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'
-  aliasmux new backup 'rsync -ahP {@+} {$BACKUP_DIR:D}'";
+  rea new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
+  rea new cpto 'cp -t {-1} {@+}'
+  rea new incl 'gcc -I{@} -c {-1}'
+  rea new relink 'rm -f {@} && symlink {-1} {@}'
+  rea new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'
+  rea new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'
+  rea new backup 'rsync -ahP {@+} {$BACKUP_DIR:D}'";
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///
 /// Each alias is a small standalone executable. DIR defaults to the directory
-/// this program is in, and the stub to `aliasmux-stub` next to it.
+/// this program is in, and the stub to `rea-stub` next to it.
 #[derive(Parser)]
 // `-h` shows the short help with a pointer; `--help` shows the syntax too.
-#[command(name = SELF_NAME, version, after_help = "Run `aliasmux --help` for the template syntax.", after_long_help = SYNTAX)]
+#[command(name = SELF_NAME, version, after_help = "Run `rea --help` for the template syntax.", after_long_help = SYNTAX)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -112,10 +112,10 @@ struct Output {
     /// Directory for the aliases (default: the directory this program is in).
     #[arg(short = 'o', long = "out", value_name = "DIR", value_hint = ValueHint::DirPath)]
     dir: Option<PathBuf>,
-    /// The stub executable to copy (default: aliasmux-stub next to this program).
+    /// The stub executable to copy (default: rea-stub next to this program).
     #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     stub: Option<PathBuf>,
-    /// Allow replacing an existing file that is not an aliasmux alias (another
+    /// Allow replacing an existing file that is not a rea alias (another
     /// program, say). Existing aliases are always updated without this, and
     /// unchanged ones are never rewritten, with or without it.
     // Constraint on change: deliberately not called --force, which reads as
@@ -208,14 +208,14 @@ enum Cmd {
     /// this program was run as (so a renamed or symlinked copy gets its own).
     /// Install it where the shell looks, for example:
     ///
-    ///   bash  aliasmux completions bash > ~/.local/share/bash-completion/completions/aliasmux
-    ///   zsh   aliasmux completions zsh > ~/.zfunc/_aliasmux
+    ///   bash  rea completions bash > ~/.local/share/bash-completion/completions/rea
+    ///   zsh   rea completions zsh > ~/.zfunc/_rea
     ///         (with `fpath+=~/.zfunc` before `compinit` in ~/.zshrc)
-    ///   fish  aliasmux completions fish > ~/.config/fish/completions/aliasmux.fish
+    ///   fish  rea completions fish > ~/.config/fish/completions/rea.fish
     ///
     /// For a renamed copy, use its name in the file names too: bash and zsh find
     /// the script by the command's name. Or load it on every start instead, e.g.
-    /// `source <(aliasmux completions bash)` in ~/.bashrc. Regenerate it after
+    /// `source <(rea completions bash)` in ~/.bashrc. Regenerate it after
     /// upgrading, in case options changed.
     #[command(verbatim_doc_comment)]
     Completions {
@@ -291,7 +291,7 @@ fn definition_problem(name: &str, template: &str) -> Option<String> {
     }
     // These two would shadow the tool and its stub in the same directory.
     if name == SELF_NAME || name == STUB_NAME {
-        return Some(format!("`{name}` is reserved for aliasmux itself"));
+        return Some(format!("`{name}` is reserved for rea itself"));
     }
     // The real parser, with a caret under the error.
     if let Err(err) = template::parse(template) {
@@ -352,7 +352,7 @@ fn eval(template: String, args: &[OsString]) -> ! {
     let source = if template == "-" {
         template_from_stdin().unwrap_or_else(|err| {
             fail(&err);
-            std::process::exit(aliasmux_core::USAGE_ERROR);
+            std::process::exit(rea_core::USAGE_ERROR);
         })
     } else {
         template
@@ -394,7 +394,7 @@ fn template_from_stdin() -> Result<String, String> {
 /// finding the stub.
 ///
 /// Assumption: on Linux, `current_exe` resolves symlinks (it reads
-/// /proc/self/exe), so a symlinked `aliasmux` still finds the stub beside the
+/// /proc/self/exe), so a symlinked `rea` still finds the stub beside the
 /// real file. Defaulting DIR here is an arbitrary convenience: installing the
 /// tool in ~/.local/bin makes new aliases land there too.
 fn own_dir() -> Result<PathBuf, String> {
@@ -433,7 +433,7 @@ impl Stub {
         // holds a valid alias (any alias also works as a stub).
         if let Err(slot::SlotError::Corrupt(why)) = slot::decode_at(&image, offset) {
             return Err(format!(
-                "{}: not an aliasmux stub (marker found, but {why})",
+                "{}: not a rea stub (marker found, but {why})",
                 path.display()
             ));
         }
@@ -463,7 +463,7 @@ fn alias_in(image: &[u8]) -> Option<(&str, &str)> {
 enum Existing {
     /// Nothing.
     Missing,
-    /// An aliasmux alias; holds the file's bytes for an unchanged-check.
+    /// A rea alias; holds the file's bytes for an unchanged-check.
     Alias(Vec<u8>),
     /// Something else (another program, the stub, a directory...).
     Other,
@@ -531,7 +531,7 @@ fn write_alias(
         Existing::Other if replace_non_aliases => Wrote::Replaced,
         Existing::Other => {
             return Err(format!(
-                "{} exists and is not an aliasmux alias; use --replace-non-aliases to replace it",
+                "{} exists and is not a rea alias; use --replace-non-aliases to replace it",
                 target.display()
             ));
         }
@@ -539,7 +539,7 @@ fn write_alias(
     // Write to a temporary name, then rename: replacing a running executable
     // in place fails with ETXTBSY, and a half-written file must never be left
     // under the alias's name. The leading dot keeps it out of normal listings.
-    let temp = dir.join(format!(".{name}.aliasmux-tmp"));
+    let temp = dir.join(format!(".{name}.rea-tmp"));
     if let Err(err) = write_executable(&temp, &bytes).and_then(|()| fs::rename(&temp, &target)) {
         let _ = fs::remove_file(&temp);
         return Err(format!("cannot write {}: {err}", target.display()));
@@ -759,7 +759,7 @@ fn read_definition(file: &Path) -> Result<(String, String), String> {
         // A marker with garbage after it is a false positive (this program
         // carries the marker bytes as a constant), not a damaged alias.
         Err(slot::SlotError::Corrupt(why)) => Err(format!(
-            "{}: not an aliasmux alias (marker found, but {why})",
+            "{}: not a rea alias (marker found, but {why})",
             file.display()
         )),
         Err(err) => Err(format!("{}: {err}", file.display())),
@@ -814,7 +814,7 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
         Ok(parsed) => parsed,
         Err(err) => {
             fail(&format!("invalid template: {}", err.render(&source)));
-            return aliasmux_core::USAGE_ERROR;
+            return rea_core::USAGE_ERROR;
         }
     };
     // Failed checks and unset variables don't stop the explanation: the plan
@@ -827,7 +827,7 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
         Ok(preview) => preview,
         Err(err) => {
             fail(&err.to_string());
-            return aliasmux_core::USAGE_ERROR;
+            return rea_core::USAGE_ERROR;
         }
     };
     // Stages are indented under their pipeline so the structure reads at a glance.
@@ -868,5 +868,5 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     for err in &problems {
         eprintln!("{SELF_NAME}: would not run: {err}");
     }
-    aliasmux_core::USAGE_ERROR
+    rea_core::USAGE_ERROR
 }
