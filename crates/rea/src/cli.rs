@@ -256,7 +256,7 @@ pub fn main() -> ! {
 /// Print the completion script for `shell` to stdout.
 ///
 /// The script is tied to a command name, so it uses the name this program
-/// was run as, falling back to the package name if argv[0] has none.
+/// was run as, falling back to the package name if `argv[0]` has none.
 fn completions(shell: Shell) -> i32 {
     let name = std::env::args_os()
         .next()
