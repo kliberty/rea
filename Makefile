@@ -49,7 +49,7 @@ endif
 REA := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
-.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall aliases aliases-prune check-aliases clean
+.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall completions aliases aliases-prune check-aliases clean
 
 # Default target: show what's available, since there is no single obvious
 # action (unlike a typical `make` that just builds).
@@ -64,12 +64,13 @@ help:
 	@echo "make install         install rea + rea-stub into $(BINDIR)"
 	@echo "make install-static  the same, statically linked (runs on any Linux of this arch)"
 	@echo "make uninstall       remove them again (aliases are left in place)"
+	@echo "make completions     install shell completion scripts. set COMPLETION_SHELL to override auto detection"
 	@echo "make aliases         create/update the aliases in $(ALIASES), into $(BINDIR)"
 	@echo "make aliases-prune   the same, and remove aliases no longer in $(ALIASES)"
 	@echo "make check-aliases   validate $(ALIASES) without writing anything"
 	@echo "make clean           remove target/"
 	@echo
-	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)"
+	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)  COMPLETION_SHELL=$(COMPLETION_SHELL)"
 	@echo "  PIE=no builds non-position-independent binaries: faster alias"
 	@echo "  startup, but no address randomization for the binary itself"
 
