@@ -11,7 +11,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueHint};
+use clap_complete::Shell;
 
 use aliasmux_core::{aliasfile, run_alias, slot, template};
 
@@ -109,10 +110,10 @@ struct Cli {
 #[derive(clap::Args)]
 struct Output {
     /// Directory for the aliases (default: the directory this program is in).
-    #[arg(short = 'o', long = "out", value_name = "DIR")]
+    #[arg(short = 'o', long = "out", value_name = "DIR", value_hint = ValueHint::DirPath)]
     dir: Option<PathBuf>,
     /// The stub executable to copy (default: aliasmux-stub next to this program).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
     stub: Option<PathBuf>,
     /// Allow replacing an existing file that is not an aliasmux alias (another
     /// program, say). Existing aliases are always updated without this, and
@@ -142,6 +143,7 @@ enum Cmd {
     /// whose definition is unchanged are left untouched.
     Patch {
         /// Alias file: one `name = template` per line, `#` for comments.
+        #[arg(value_hint = ValueHint::FilePath)]
         file: PathBuf,
         /// Only these aliases from the file (default: all of them).
         names: Vec<String>,
@@ -154,6 +156,7 @@ enum Cmd {
     /// Validate an alias file without writing anything.
     Check {
         /// Alias file to check.
+        #[arg(value_hint = ValueHint::FilePath)]
         file: PathBuf,
     },
     /// List the aliases in a directory, in alias-file format.
@@ -162,12 +165,13 @@ enum Cmd {
     /// by `patch aliases.txt` recreates the same aliases.
     List {
         /// Directory to scan (default: the directory this program is in).
+        #[arg(value_hint = ValueHint::DirPath)]
         dir: Option<PathBuf>,
     },
     /// Print the definition stored in alias executables.
     Inspect {
         /// Alias executables.
-        #[arg(required = true)]
+        #[arg(required = true, value_hint = ValueHint::FilePath)]
         files: Vec<PathBuf>,
     },
     /// Print the commands an alias would run, without running them.
@@ -180,9 +184,10 @@ enum Cmd {
         #[arg(short = 't', long = "template")]
         is_template: bool,
         /// Alias executable (or template source, with -t).
+        #[arg(value_hint = ValueHint::FilePath)]
         target: String,
         /// Arguments to expand with.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_hint = ValueHint::AnyPath)]
         args: Vec<OsString>,
     },
     /// Run a template directly, to try it out before creating an alias.
@@ -194,8 +199,28 @@ enum Cmd {
         /// Template source (quote it for your shell), or `-` to read it from stdin.
         template: String,
         /// Arguments for the template, passed through untouched.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_hint = ValueHint::AnyPath)]
         args: Vec<OsString>,
+    },
+    /// Print a tab-completion script for a shell.
+    ///
+    /// The script completes subcommands, options and file names, for the name
+    /// this program was run as (so a renamed or symlinked copy gets its own).
+    /// Install it where the shell looks, for example:
+    ///
+    ///   bash  aliasmux completions bash > ~/.local/share/bash-completion/completions/aliasmux
+    ///   zsh   aliasmux completions zsh > ~/.zfunc/_aliasmux
+    ///         (with `fpath+=~/.zfunc` before `compinit` in ~/.zshrc)
+    ///   fish  aliasmux completions fish > ~/.config/fish/completions/aliasmux.fish
+    ///
+    /// For a renamed copy, use its name in the file names too: bash and zsh find
+    /// the script by the command's name. Or load it on every start instead, e.g.
+    /// `source <(aliasmux completions bash)` in ~/.bashrc. Regenerate it after
+    /// upgrading, in case options changed.
+    #[command(verbatim_doc_comment)]
+    Completions {
+        /// The shell to write the script for.
+        shell: Shell,
     },
 }
 
@@ -223,8 +248,26 @@ pub fn main() -> ! {
             args,
         } => explain(is_template, &target, &args),
         Cmd::Eval { template, args } => eval(template, &args),
+        Cmd::Completions { shell } => completions(shell),
     };
     std::process::exit(status);
+}
+
+/// Print the completion script for `shell` to stdout.
+///
+/// The script is tied to a command name, so it uses the name this program
+/// was run as, falling back to the package name if argv[0] has none.
+fn completions(shell: Shell) -> i32 {
+    let name = std::env::args_os()
+        .next()
+        .and_then(|arg0| {
+            Path::new(&arg0)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| SELF_NAME.to_owned());
+    clap_complete::generate(shell, &mut Cli::command(), name, &mut io::stdout());
+    0
 }
 
 /// Print an error and return exit status 1.

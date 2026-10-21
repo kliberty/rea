@@ -939,3 +939,28 @@ fn alias_handles_arguments_beyond_its_arena() {
     assert_eq!(stdout(&out), args.join("\n") + "\n");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn completion_script_is_for_the_name_run_as() {
+    // The plain binary: the script registers itself for `aliasmux`.
+    let out = tool(&args!["completions", "bash"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("complete -F _aliasmux"),
+        "{}",
+        stdout(&out)
+    );
+    // A renamed copy (here a symlink) gets a script for its own name, since
+    // the shell looks scripts up by the command typed.
+    let dir = scratch("completions");
+    let renamed = dir.join("rea");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_aliasmux"), &renamed).unwrap();
+    let out = Command::new(&renamed)
+        .args(["completions", "bash"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let script = stdout(&out);
+    assert!(script.contains("complete -F _rea"), "{script}");
+    let _ = fs::remove_dir_all(&dir);
+}
