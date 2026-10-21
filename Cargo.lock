@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aliasmux"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "aliasmux-core",
  "clap",
@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aliasmux-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "libc",
 ]
