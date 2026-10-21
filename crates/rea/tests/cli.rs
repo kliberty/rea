@@ -1,7 +1,7 @@
 //! End-to-end tests: run the real binary and check processes, pipes, exit
 //! statuses and signals.
 //!
-//! Runtime behavior is tested through `aliasmux eval TEMPLATE ARGS...`, which
+//! Runtime behavior is tested through `rea eval TEMPLATE ARGS...`, which
 //! runs a template exactly as a patched alias would. Assumption: a POSIX
 //! userland is present (printf, sort, tr, cat, tee, mv, yes, head, sh, ls).
 
@@ -39,7 +39,7 @@ fn stderr(out: &Output) -> String {
 ///
 /// Tests run in parallel, so each must pass a different `tag`.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("aliasmux-test-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rea-test-{}-{tag}", std::process::id()));
     // Leftovers from an aborted run with the same pid are possible; start clean.
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create scratch dir");
@@ -95,10 +95,10 @@ fn upstream_sigpipe_is_success_and_does_not_hang() {
 #[test]
 fn missing_command_is_127() {
     // Both via the direct exec path and inside a pipeline.
-    let single = eval("no-such-command-aliasmux", &[]);
+    let single = eval("no-such-command-rea", &[]);
     assert_eq!(single.status.code(), Some(127));
-    assert!(stderr(&single).contains("no-such-command-aliasmux: command not found"));
-    let piped = eval("no-such-command-aliasmux | cat", &[]);
+    assert!(stderr(&single).contains("no-such-command-rea: command not found"));
+    let piped = eval("no-such-command-rea | cat", &[]);
     assert_eq!(piped.status.code(), Some(127));
 }
 
@@ -230,7 +230,7 @@ fn default_sigint_still_reaches_children() {
 // this package into the same directory).
 // ---------------------------------------------------------------------------
 
-/// Run `aliasmux` with arguments and capture its output.
+/// Run `rea` with arguments and capture its output.
 fn tool(args: &[&OsStr]) -> Output {
     bin().args(args).output().expect("binary runs")
 }
@@ -458,7 +458,7 @@ fn list_output_is_an_alias_file_that_recreates_the_aliases() {
 
 #[test]
 fn the_tool_itself_is_refused_as_a_stub() {
-    // aliasmux carries the marker bytes in its patching code. Treating that as
+    // rea carries the marker bytes in its patching code. Treating that as
     // a slot would overwrite 4 KiB of the program, so it must refuse.
     let dir = scratch("stub-guard");
     let out = tool(&args![
@@ -506,7 +506,7 @@ fn explain_reads_an_alias_executable() {
 // `eval -`: the template read from stdin.
 // ---------------------------------------------------------------------------
 
-/// Run `aliasmux eval - ARGS...` with `input` on stdin and capture its output.
+/// Run `rea eval - ARGS...` with `input` on stdin and capture its output.
 fn eval_stdin(input: &[u8], args: &[&str]) -> Output {
     use std::io::Write;
     use std::process::Stdio;
@@ -650,7 +650,7 @@ fn template_syntax_is_in_the_long_help() {
 
 #[test]
 fn closed_stdout_ends_quietly_instead_of_panicking() {
-    // Like any Unix tool, `aliasmux explain ... | head` must just stop when the
+    // Like any Unix tool, `rea explain ... | head` must just stop when the
     // reader goes away. The output (~200 KB) is far larger than a pipe buffer,
     // so the write is certain to happen after `head -c 1` has exited.
     let script = r#""$0" explain -t 'echo {@}' $(seq 100000 130000) | head -c 1 >/dev/null"#;
@@ -801,18 +801,15 @@ fn env_references_at_run_time() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "hello world|");
     // Unset: nothing runs, not even the steps before it.
-    let template = format!(
-        "touch {} && echo {{$ALIASMUX_TEST_UNSET}}",
-        marker.display()
-    );
+    let template = format!("touch {} && echo {{$REA_TEST_UNSET}}", marker.display());
     let out = bin()
         .args(["eval", &template])
-        .env_remove("ALIASMUX_TEST_UNSET")
+        .env_remove("REA_TEST_UNSET")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        stderr(&out).contains("{$ALIASMUX_TEST_UNSET} is not set"),
+        stderr(&out).contains("{$REA_TEST_UNSET} is not set"),
         "{}",
         stderr(&out)
     );
@@ -938,7 +935,7 @@ fn alias_handles_arguments_beyond_its_arena() {
 
 #[test]
 fn completion_script_is_for_the_name_run_as() {
-    // The plain binary: the script registers itself for `aliasmux`.
+    // The plain binary: the script registers itself for `rea`.
     let out = tool(&args!["completions", "bash"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
