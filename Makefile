@@ -49,7 +49,7 @@ endif
 REA := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
-.PHONY: help build build-static test lint install install-static uninstall aliases aliases-prune check-aliases clean
+.PHONY: help build build-static test test-matrix lint install install-static uninstall aliases aliases-prune check-aliases clean
 
 # Default target: show what's available, since there is no single obvious
 # action (unlike a typical `make` that just builds).
@@ -57,6 +57,7 @@ help:
 	@echo "make build           release build into target/"
 	@echo "make build-static    static (musl) release build"
 	@echo "make test            run all tests"
+	@echo "make test-matrix     the same in every build configuration (needs the musl target)"
 	@echo "make lint            run clippy on everything"
 	@echo "make install         install rea + rea-stub into $(BINDIR)"
 	@echo "make install-static  the same, statically linked (runs on any Linux of this arch)"
@@ -75,6 +76,19 @@ build:
 
 test:
 	cargo test --locked
+
+# The tests in every configuration that changes what ends up in the stub:
+# debug and release, with and without LTO, glibc and static musl. Which parts
+# of rea-core a stub keeps depends on all three, and once a stub built
+# without LTO for musl carried a stray copy of the slot marker that only that
+# configuration showed. Slow, since each line is a separate build.
+test-matrix: check-static-target
+	cargo test --locked
+	cargo test --locked --release
+	CARGO_PROFILE_RELEASE_LTO=off cargo test --locked --release
+	cargo test --locked --target $(STATIC_TARGET)
+	cargo test --locked --release --target $(STATIC_TARGET)
+	CARGO_PROFILE_RELEASE_LTO=off cargo test --locked --release --target $(STATIC_TARGET)
 
 lint:
 	cargo clippy --locked --all-targets
