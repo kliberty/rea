@@ -3,6 +3,9 @@ name = "rea-core"
 description = "rea runtime: template language, alias file format, process execution"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [dependencies]
 libc.workspace = true

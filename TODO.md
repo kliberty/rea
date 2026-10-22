@@ -7,6 +7,10 @@ Ideas that are designed or agreed on but not built yet. Newest first.
 - make clap wrap long help texts
 - can clap show conflicts? (`rea patch --prune backup.txt cpt` is
   refused)
+- Add category and keywords to crates.io
+  - keywords = ["alias", "shell", "cli", "pipeline", "command"]
+  - categories = ["command-line-utilities"]
+
 
 ## Add dry run flag for patch, and other patch improvements
 

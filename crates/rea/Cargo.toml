@@ -3,6 +3,9 @@ name = "rea"
 description = "Command aliases with numbered arguments and real pipelines, no shell"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
 
 # Two binaries, built side by side: `rea` (src/main.rs), the tool that
 # creates aliases, and `rea-stub` (src/bin/rea-stub.rs), the
@@ -21,3 +24,12 @@ test = false
 rea-core.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
+
+# Small, fast-starting static binaries. None of these change behavior.
+[profile.release]
+# No unwinding machinery; a panic is a bug here, so aborting is fine.
+panic = "abort"
+lto = true
+# Arbitrary trade-off: slower builds for slightly better LTO.
+codegen-units = 1
+strip = true
