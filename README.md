@@ -173,6 +173,7 @@ up stdin, so the template's own commands then see stdin at end of file.
   `{1} --opt val {@} -o {-1}`.
 - Every argument must be used, and `{N}` / `{-N}` numbering has no gaps:
   `{3}` needs `{2}`, or a slice that covers it (`{1} {2..} {3}` is fine).
+  Numbers go up to 1000, in references and slice ends alike.
   `{@}` doesn't fill gaps, so the typo `cp {1} {3} {@}` is still caught. The count is exact unless `{@}`, `{@+}` or a slice is
   used, so `flif270 *.flif` is an error, not "process the first file".
   A count at which a slice would overlap the other references differently

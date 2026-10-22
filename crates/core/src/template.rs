@@ -784,7 +784,16 @@ impl WordBuilder {
     }
 }
 
-/// Parse one position: `N` or `-N`, N >= 1.
+/// The largest N a reference may use, in `{N}`, `{-N}` or a slice end.
+///
+/// Arbitrary, but far beyond any real template. It bounds the arity search,
+/// which checks every argument count up to 2N+1 and so grows with N squared:
+/// `{1..10000} {10000}` took about 2 seconds to create. Linux allows roughly
+/// 230,000 arguments at most anyway (argv and the environment share a quarter
+/// of the stack limit, 2 MiB by default, at 9 or more bytes per argument).
+const MAX_POSITION: usize = 1000;
+
+/// Parse one position: `N` or `-N`, 1 <= N <= [`MAX_POSITION`].
 ///
 /// `body` is the whole reference body, for error messages.
 fn parse_index(text: &str, body: &str) -> Result<Index, String> {
@@ -798,15 +807,18 @@ fn parse_index(text: &str, body: &str) -> Result<Index, String> {
             "unknown reference `{{{body}}}`; expected {{N}}, {{-N}}, {{A..B}}, {{@}}, {{@+}} or {{0}}"
         ));
     }
-    // Overflow is the only way the parse can fail after the digit check.
-    let n: usize = digits
-        .parse()
-        .map_err(|_| format!("the number in `{{{body}}}` is too large"))?;
+    // Overflow is the only way the parse can fail after the digit check, and
+    // such a number is over the limit too.
+    let over = || format!("`{{{body}}}`: positions go up to {MAX_POSITION}");
+    let n: usize = digits.parse().map_err(|_| over())?;
     // 0 is only meaningful alone, as `{0}` (handled by the caller).
     if n == 0 {
         return Err(format!(
             "`{{{body}}}`: positions count from 1 at the front and from -1 at the back; 0 is not a position"
         ));
+    }
+    if n > MAX_POSITION {
+        return Err(over());
     }
     Ok(if back {
         Index::Back(n)
@@ -2636,6 +2648,30 @@ mod tests {
         for (src, offset) in cases {
             let err = parse(src).expect_err(src);
             assert_eq!(err.offset, Some(offset), "{src}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn positions_are_capped() {
+        // The largest position is fine, wherever it appears.
+        assert!(parse("echo {1..1000} {1000}").is_ok());
+        assert!(parse("echo {-1000} {-1000..}").is_ok());
+        // One more is refused, in {N}, {-N} and either slice end, and so is a
+        // number too large for usize, with the same message.
+        for src in [
+            "echo {1..1001} {1001}",
+            "echo {-1001} {@}",
+            "echo {1001..} {@}",
+            "echo {..-1001} {@}",
+            "echo {99999999999999999999999} {@}",
+        ] {
+            let err = parse(src).expect_err(src);
+            assert!(
+                err.message.contains("positions go up to 1000"),
+                "{src}: {}",
+                err.message
+            );
+            assert_eq!(err.offset, Some(5), "{src}");
         }
     }
 
