@@ -787,11 +787,14 @@ impl WordBuilder {
 /// The largest N a reference may use, in `{N}`, `{-N}` or a slice end.
 ///
 /// Arbitrary, but far beyond any real template. It bounds the arity search,
-/// which checks every argument count up to 2N+1 and so grows with N squared:
-/// `{1..10000} {10000}` took about 2 seconds to create. Linux allows roughly
-/// 230,000 arguments at most anyway (argv and the environment share a quarter
-/// of the stack limit, 2 MiB by default, at 9 or more bytes per argument).
-const MAX_POSITION: usize = 1000;
+/// which checks every argument count up to 2N+1 and so grows with N squared.
+/// Checking `{1..5000} {5000}` takes ~0.25 second on a release build.
+#[cfg(not(test))]
+const MAX_POSITION: usize = 5_000;
+// Arity checks are much slower on an unoptimized build, so we
+// reduce the number to make unit tests faster.
+#[cfg(test)]
+const MAX_POSITION: usize = 100;
 
 /// Parse one position: `N` or `-N`, 1 <= N <= [`MAX_POSITION`].
 ///
@@ -2715,20 +2718,26 @@ mod tests {
     #[test]
     fn positions_are_capped() {
         // The largest position is fine, wherever it appears.
-        assert!(parse("echo {1..1000} {1000}").is_ok());
-        assert!(parse("echo {-1000} {-1000..}").is_ok());
+        assert!(
+            parse(&format!("echo {{1..{}}} {{{}}}", MAX_POSITION, MAX_POSITION)).is_ok()
+        );
+        assert!(
+            parse(&format!("echo {{-{}}} {{-{}..}}", MAX_POSITION, MAX_POSITION)).is_ok()
+        );
         // One more is refused, in {N}, {-N} and either slice end, and so is a
         // number too large for usize, with the same message.
         for src in [
-            "echo {1..1001} {1001}",
-            "echo {-1001} {@}",
-            "echo {1001..} {@}",
-            "echo {..-1001} {@}",
-            "echo {99999999999999999999999} {@}",
+            format!("echo {{1..{}}} {{{}}}", MAX_POSITION + 1, MAX_POSITION + 1),
+            format!("echo {{-{}}} {{@}}", MAX_POSITION + 1),
+            format!("echo {{{}..}} {{@}}", MAX_POSITION + 1),
+            format!("echo {{..-{}}} {{@}}", MAX_POSITION + 1),
+            format!("echo {{..{}}} {{@}}", MAX_POSITION + 1),
+            "echo {99999999999999999999999} {@}".to_string(),
         ] {
-            let err = parse(src).expect_err(src);
+            let err = parse(&src).expect_err(&src);
             assert!(
-                err.message.contains("positions go up to 1000"),
+                err.message
+                    .contains(&format!("positions go up to {}", MAX_POSITION)),
                 "{src}: {}",
                 err.message
             );

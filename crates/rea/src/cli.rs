@@ -78,7 +78,7 @@ Template syntax:
   -I{@} gives -Ia -Ib, and nothing at all when {@} is empty.
 
   Every argument must be used, and numbering has no gaps: {3} needs {2},
-  or a slice covering it ({@} doesn't count). Numbers go up to 1000, in
+  or a slice covering it ({@} doesn't count). Numbers go up to 5000, in
   references and slices alike. The count is exact unless {@},
   {@+} or a slice is used. A single command with no references (not even
   {0} or {$NAME}) gets {@} appended, like a shell alias.
