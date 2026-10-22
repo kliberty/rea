@@ -61,6 +61,7 @@ fn run_parsed(
     // Several processes: supervise them, then exit as the result dictates.
     run::ensure_standard_fds();
     run::ignore_sigpipe();
+    run::restore_default_sigchld();
     run::shield_from_terminal_signals();
     run::exit_with(run::run_plan(name, &plan));
 }

@@ -203,8 +203,9 @@ fn run_pipeline(alias: &str, stages: &[Argv]) -> Outcome {
     let outcomes: Vec<Outcome> = spawned
         .into_iter()
         .map(|stage| match stage {
-            // `wait` can only fail with ECHILD, which means the child was reaped
-            // elsewhere; nothing in this process does that, so it's a generic failure.
+            // `wait` fails with ECHILD if the child was already reaped. With
+            // SIGCHLD at its default (see `restore_default_sigchld`), nothing
+            // reaps it but this wait, so treat a failure as a generic one.
             Stage::Running(mut child) => child
                 .wait()
                 .map_or(Outcome::Exited(1), Outcome::from_status),
@@ -271,6 +272,27 @@ pub fn ignore_sigpipe() {
     // SAFETY: a plain disposition change with no handler.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
+/// Put SIGCHLD back to its default in the supervisor, so its children can be
+/// waited for.
+///
+/// SIGCHLD ignored is inherited across exec, and some parents start programs
+/// that way (`trap '' CHLD` in bash). With it ignored, the kernel reaps each
+/// child as it exits, and the wait for it fails with ECHILD: every stage would
+/// then lose its exit status and count as failed. Must run before the first
+/// stage is spawned.
+///
+/// Deviation from sh: the stages get SIGCHLD at its default too, where sh
+/// would keep the inherited ignore for them. Keeping it would mean setting it
+/// in each child between fork and exec, which stops std from using
+/// `posix_spawn`. A single command is exec'd with SIGCHLD as inherited (see
+/// `exec_single`).
+pub fn restore_default_sigchld() {
+    // SAFETY: a plain disposition change with no handler.
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_DFL);
     }
 }
 
