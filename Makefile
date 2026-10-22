@@ -34,7 +34,7 @@ ifeq ($(PIE),no)
 # test and lint don't rebuild everything when PIE changes. Assumption: rustc
 # makes a static non-PIE binary from relocation-model=static with crt-static
 # (the musl default), and a dynamic non-PIE one with glibc.
-build install: export RUSTFLAGS := $(RUSTFLAGS) -C relocation-model=static
+build install test-many: export RUSTFLAGS := $(RUSTFLAGS) -C relocation-model=static
 # Without --target, cargo applies RUSTFLAGS to proc macros (clap_derive) too,
 # which must stay position-independent and then fail to link. Naming the host
 # target keeps RUSTFLAGS to the binaries; the static variants set their own.
@@ -49,24 +49,28 @@ endif
 REA := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
-.PHONY: help build build-static test lint install install-static uninstall aliases aliases-prune check-aliases clean
+.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall completions aliases aliases-prune check-aliases clean
 
 # Default target: show what's available, since there is no single obvious
 # action (unlike a typical `make` that just builds).
 help:
 	@echo "make build           release build into target/"
 	@echo "make build-static    static (musl) release build"
-	@echo "make test            run all tests"
+	@echo "make test            run all tests with dev profile"
+	@echo "make test-many       run all tests in dev, release, and release+no-LTO"
+	@echo "make test-static     run test-many for the musl target"
+	@echo "make test-full       run test-many for default and musl targets with PIE=no and PIE=yes"
 	@echo "make lint            run clippy on everything"
 	@echo "make install         install rea + rea-stub into $(BINDIR)"
 	@echo "make install-static  the same, statically linked (runs on any Linux of this arch)"
 	@echo "make uninstall       remove them again (aliases are left in place)"
+	@echo "make completions     install shell completion scripts. set COMPLETION_SHELL to override auto detection"
 	@echo "make aliases         create/update the aliases in $(ALIASES), into $(BINDIR)"
 	@echo "make aliases-prune   the same, and remove aliases no longer in $(ALIASES)"
 	@echo "make check-aliases   validate $(ALIASES) without writing anything"
 	@echo "make clean           remove target/"
 	@echo
-	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)"
+	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)  COMPLETION_SHELL=$(COMPLETION_SHELL)"
 	@echo "  PIE=no builds non-position-independent binaries: faster alias"
 	@echo "  startup, but no address randomization for the binary itself"
 
@@ -75,6 +79,24 @@ build:
 
 test:
 	cargo test --locked
+
+# Runs tests in debug, release, and without LTO to catch regressions
+# due to the changes in the internal layout of the stub.
+test-many:
+	cargo test --locked $(TARGET_FLAGS)
+	cargo test --locked --release $(TARGET_FLAGS)
+	CARGO_PROFILE_RELEASE_LTO=off cargo test --locked --release $(TARGET_FLAGS)
+
+# Runs all tests from test-many for the static musl target.
+test-static: TARGET_FLAGS := --target $(STATIC_TARGET)
+test-static: check-static-target test-many
+
+# Runs tests for each configuration for each target.
+test-full:
+	$(MAKE) test-many
+	$(MAKE) test-static
+	$(MAKE) test-many PIE=no
+	$(MAKE) test-static PIE=no
 
 lint:
 	cargo clippy --locked --all-targets
