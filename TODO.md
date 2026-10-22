@@ -10,6 +10,119 @@ Ideas that are designed or agreed on but not built yet. Newest first.
 - Add category and keywords to crates.io
   - keywords = ["alias", "shell", "cli", "pipeline", "command"]
   - categories = ["command-line-utilities"]
+- README: mention the zsh `fpath` line needed for `make completions`
+  (`~/.local/share/zsh/site-functions` isn't on zsh's search path by default).
+- Set `rust-version` in Cargo.toml (edition 2024 needs at least 1.85; the
+  real minimum is untested).
+- bench/perfdiff.py: a minor-faults column, and a warning for `.json` files
+  that don't match the `tz-perf-NAME.perf.json` pattern.
+- Code comments in template.rs (around lines 957, 1860, 2530, 3031, 3052,
+  3139) still use "names"/"spelled" phrasing; reword like the commits.
+- Archive the old aliasmux repository with a pointer to rea, and delete its
+  scratch branches (`new/`, `fixed/`, `reworded/`, `final/`, `*-old`).
+- `hot-order` is unmerged and still uses the old names; rename it if it
+  should ever land.
+
+## Bug: inherited SIGCHLD ignore breaks every waited-for step
+
+If rea starts with SIGCHLD set to ignored (some parents do this, and it
+survives exec), the kernel reaps children automatically and the supervisor's
+`wait` fails with ECHILD. run.rs maps that to exit 1, with a comment saying it
+can't happen. Every step that is waited on then counts as failed, so control
+flow goes wrong too. Reproduce with bash, since dash doesn't pass the ignore on:
+
+    bash -c "trap '' CHLD; exec rea eval 'true && echo ok'"   # prints nothing, exit 1
+    bash -c "trap '' CHLD; exec rea eval 'true | true'"       # exit 1
+
+A single command is unaffected (it is exec'd, not waited for). The C++ runtime
+resets SIGCHLD to the default before spawning; the supervisor path should do
+the same, before forking, and fix the comment. Worth a test that runs an alias
+under an inherited ignore.
+
+## Bug: the arity search is quadratic in the largest argument number
+
+`compute_arity` tries every count up to 2K+1 and lays the template out at
+each. `rea new t 'echo {1..10000} {10000}'` takes 0.57 s with about 1,600
+minor faults on a glibc build, but 2 s with about 985,000 faults on the static
+musl build: musl's malloc returns freed memory to the kernel eagerly, so each
+of the 20,000 layouts allocates fresh pages and faults on every one. Fixes,
+which combine:
+
+- Refuse references above some cap (below).
+- Reuse the layout's buffers across counts instead of allocating per count;
+  that alone removes the fault storm on musl.
+- A different allocator for the tool (e.g. mimalloc) is the usual musl
+  remedy, but adds a dependency; probably unnecessary after the above. The
+  stub has its own arena and isn't affected.
+
+Sizing the cap: argv and the environment together may use a quarter
+of the stack limit (`getconf ARG_MAX`: 2 MiB with the default 8 MiB stack), and
+each argument costs its length + 1 + an 8-byte pointer, so even empty arguments
+top out around 230,000. A cap far below that (hundreds or a few thousand) keeps
+creation fast and loses nothing real.
+
+## Remove the implicit {@}
+
+Decided: a single command with no references no longer gets `{@}` appended.
+Templates mean exactly what they say, and adding `{$NAME}` or `{0}` stops
+silently changing the arity (`echo` takes any arguments, `echo {$PWD}` takes
+none). Changes existing aliases after reinstalling, so it needs a minor
+version bump and an upgrade note.
+
+- Remove the rule and the `implicit_rest` field from template.rs.
+- Wrong-count error for a template with no argument references: add a hint,
+  e.g. "(the template uses no arguments; `{@}` passes them through)".
+- Help, README and the example `ll = ls -la` become `ll = ls -la {@}`.
+- Tests that relied on it flip to expecting zero arguments.
+
+## Exec the last command of a list
+
+`a && b` forks and waits for `b` even when nothing runs after it. Exec'ing the
+last command, as the single-command path does, saves a process and passes
+signals and exit status through untouched. Only when no later step could run
+(the last command of the last pipeline, and not inside a pipeline).
+
+## Warn about `a && b || c`
+
+It reads as if/then/else but runs `c` when `b` fails too (shellcheck's
+SC2015). A warning at creation, not an error, since it is sometimes intended.
+
+## Completion for aliases' arguments
+
+Discussed design; the CLI's own completion exists (`rea completions SHELL`).
+
+- `rea complete-alias PATH CWORD WORD...` answers "files", "directories",
+  "nothing" or "complete as `CMD WORDS`"; small per-shell glue turns that
+  into candidates. Nothing changes in the stub.
+- Checks decide where they can: `{N:D}` means directories.
+- Delegation by position: map the word being completed to the reference it
+  fills, rebuild that command's line up to it (literals and arguments typed
+  so far), and ask that command's completion. Works for multi-command aliases.
+  Only for bare references; `{1}.mkv` or modifiers fall back to files.
+  `{-N}`, `{@}` and slices depend on the final count: offer the union of
+  "this is the last word" and "more will follow".
+- Per shell: fish `complete -C`; zsh rewrites `words`/`CURRENT` and calls
+  `_normal`; bash rebuilds `COMP_WORDS` and loads the command's completion.
+- Registration: bash-completion and fish load per-command files lazily, so
+  `new`/`patch` could write a one-line file per alias next to the alias
+  directory (opt-in). zsh needs registration at startup instead.
+- Later, clap's dynamic completion (`CompleteEnv`, unstable today) would also
+  fix bash offering options instead of files after `rea patch <Tab>`.
+
+## Port the operator test suite and probe here
+
+The pytest suite in the C++ alias_maker project compares how `&&`, `||`, `;`
+and `|` combinations behave against bash, using a probe program that logs what
+it was run with. It found no rea bugs (all 7,268 cases at `--max-leaves 4`
+pass), but it only lives next to the C++ code. Port to this repo:
+
+- tests/probe.c and the Python probe (tests/bin/probe), with test_probe.py,
+  which checks that both behave identically.
+- cases.py, harness.py, conftest.py and test_operators.py, keeping the
+  comparisons of `rea new` and `rea eval` against bash and each other, and
+  dropping alias_maker and its build (test_alias_maker.py, the C++ runner).
+- Rename aliasmux to rea throughout, and run it from `make test-full`
+  (needs python3, pytest and a C compiler; skip with a message if missing).
 
 
 ## Add dry run flag for patch, and other patch improvements
