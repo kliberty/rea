@@ -107,18 +107,24 @@ unsafe impl GlobalAlloc for Arena {
         // costs one failed compare-and-swap, which returns the real value.
         let mut used = 0;
         loop {
-            // Alignment is a power of two, so rounding up is a mask.
-            let start = (self.base() + used + layout.align() - 1) & !(layout.align() - 1);
-            let end = start - self.base() + layout.size();
-            if end > ARENA_SIZE {
+            // Find the next address in the arena that matches the requested
+            // alignment, or fall back to the system allocator if there's no room.
+            let alloc_addr_start =
+                (self.base() + used + layout.align() - 1) & !(layout.align() - 1);
+            let new_used = alloc_addr_start - self.base() + layout.size();
+            if new_used > ARENA_SIZE {
                 // SAFETY: forwarding the caller's valid layout.
                 return unsafe { System.alloc(layout) };
             }
-            match self
-                .used
-                .compare_exchange_weak(used, end, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                Ok(_) => return start as *mut u8,
+
+            // Claim it, unless another thread moved `used` first; then retry from there.
+            match self.used.compare_exchange_weak(
+                used,
+                new_used,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return alloc_addr_start as *mut u8,
                 Err(now) => used = now,
             }
         }
@@ -126,13 +132,18 @@ unsafe impl GlobalAlloc for Arena {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if self.owns(ptr) {
-            // Reclaim the space only if this was the last allocation; if
-            // anything came after it, the bytes simply stay unused.
-            let end = ptr as usize - self.base() + layout.size();
-            let start = ptr as usize - self.base();
-            let _ = self
-                .used
-                .compare_exchange(end, start, Ordering::Relaxed, Ordering::Relaxed);
+            // Where the block sits in the buffer, and the offset just past it.
+            let block_start = ptr as usize - self.base();
+            let block_end = block_start + layout.size();
+            // If this was the last allocation, `used` ends exactly at the block's end:
+            // move it back to the block's start. Otherwise, leave it alone; the bytes
+            // simply stay unused.
+            let _ = self.used.compare_exchange(
+                block_end,
+                block_start,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         } else {
             // SAFETY: the pointer came from `System` with this layout.
             unsafe { System.dealloc(ptr, layout) }
