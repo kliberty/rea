@@ -3,6 +3,11 @@ name = "rea"
 description = "Command aliases with numbered arguments and real pipelines, no shell"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["alias", "shell", "cli", "pipeline", "command"]
+categories = ["command-line-utilities"]
 
 # Two binaries, built side by side: `rea` (src/main.rs), the tool that
 # creates aliases, and `rea-stub` (src/bin/rea-stub.rs), the
