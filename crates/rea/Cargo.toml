@@ -25,6 +25,10 @@ rea-core.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 
+[dev-dependencies]
+# The tests start the binary with signal dispositions set up in the child.
+libc.workspace = true
+
 # Small, fast-starting static binaries. None of these change behavior.
 [profile.release]
 # No unwinding machinery; a panic is a bug here, so aborting is fine.

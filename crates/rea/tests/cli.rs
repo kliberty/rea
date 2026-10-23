@@ -6,7 +6,7 @@
 //! userland is present (printf, sort, tr, cat, tee, mv, yes, head, sh, ls).
 
 use std::fs;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -222,6 +222,40 @@ fn default_sigint_still_reaches_children() {
     let out = eval(r#"sh -c 'kill -INT $$; echo survived' | cat"#, &[]);
     assert_eq!(stdout(&out), "");
     assert_eq!(out.status.signal(), Some(2));
+}
+
+/// Run an ad-hoc template with SIGCHLD ignored from the start, as a parent
+/// that ignores it would leave it.
+fn eval_with_sigchld_ignored(template: &str) -> Output {
+    let mut command = bin();
+    command.arg("eval").arg(template);
+    // SAFETY: `signal` is async-signal-safe, so it may run between fork and
+    // exec. SIG_IGN survives the exec; a handler wouldn't.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+    command.output().expect("binary runs")
+}
+
+#[test]
+fn inherited_sigchld_ignore_keeps_exit_statuses() {
+    // With SIGCHLD ignored, children are reaped by the kernel and waiting for
+    // them fails. Each waited-for step must still report its real status.
+    let out = eval_with_sigchld_ignored("true && echo ok");
+    assert_eq!(stdout(&out), "ok\n", "{}", stderr(&out));
+    assert!(out.status.success(), "{:?}", out.status);
+
+    let out = eval_with_sigchld_ignored("true | true");
+    assert!(out.status.success(), "{:?}", out.status);
+
+    let out = eval_with_sigchld_ignored("true | sh -c 'exit 3'");
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+
+    let out = eval_with_sigchld_ignored("false || echo recovered");
+    assert_eq!(stdout(&out), "recovered\n", "{}", stderr(&out));
 }
 
 // ---------------------------------------------------------------------------
