@@ -102,8 +102,9 @@ Examples:
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///
-/// Each alias is a small standalone executable. DIR defaults to the directory
-/// this program is in, and the stub to `rea-stub` next to it.
+/// Each alias is a small standalone executable. DIR defaults to
+/// $REA_ALIAS_DIR, or else the directory this program is in, and the stub to
+/// `rea-stub` next to this program.
 #[derive(Parser)]
 // `-h` shows the short help with a pointer; `--help` shows the syntax too.
 #[command(name = SELF_NAME, version, after_help = "Run `rea --help` for the template syntax.", after_long_help = SYNTAX)]
@@ -115,7 +116,8 @@ struct Cli {
 /// Where aliases go and what they are made from; shared by `new` and `patch`.
 #[derive(clap::Args)]
 struct Output {
-    /// Directory for the aliases (default: the directory this program is in).
+    /// Directory for the aliases (default: $REA_ALIAS_DIR, or else the
+    /// directory this program is in).
     #[arg(short = 'o', long = "out", value_name = "DIR", value_hint = ValueHint::DirPath)]
     dir: Option<PathBuf>,
     /// The stub executable to copy (default: rea-stub next to this program).
@@ -170,7 +172,8 @@ enum Cmd {
     /// The output is a valid alias file, so `list DIR > aliases.txt` followed
     /// by `patch aliases.txt` recreates the same aliases.
     List {
-        /// Directory to scan (default: the directory this program is in).
+        /// Directory to scan (default: $REA_ALIAS_DIR, or else the directory
+        /// this program is in).
         #[arg(value_hint = ValueHint::DirPath)]
         dir: Option<PathBuf>,
     },
@@ -403,8 +406,8 @@ fn template_from_stdin() -> Result<String, String> {
 // Files: the stub, existing aliases, writing
 // ---------------------------------------------------------------------------
 
-/// The directory this program lives in, which is the default for DIR and for
-/// finding the stub.
+/// The directory this program lives in, where the stub is found, and the
+/// default for DIR when `$REA_ALIAS_DIR` doesn't set one.
 ///
 /// Assumption: on Linux, `current_exe` resolves symlinks (it reads
 /// /proc/self/exe), so a symlinked `rea` still finds the stub beside the
@@ -416,6 +419,25 @@ fn own_dir() -> Result<PathBuf, String> {
     exe.parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "cannot locate this program's directory".into())
+}
+
+/// The environment variable that sets the default alias directory.
+const ALIAS_DIR_VAR: &str = "REA_ALIAS_DIR";
+
+/// The default alias directory: `$REA_ALIAS_DIR`, or else the directory
+/// this program is in.
+///
+/// Every command that has a default directory uses this, so they agree:
+/// `new` and `patch` write there, `list` scans it, and a bare alias name is
+/// looked for there last. The variable is for installs that put this program
+/// somewhere aliases don't belong, such as `cargo install` into ~/.cargo/bin.
+/// An empty value counts as unset, rather than meaning the current directory,
+/// and a relative one is relative to the current directory, as with `-o`.
+fn default_dir() -> Result<PathBuf, String> {
+    match std::env::var_os(ALIAS_DIR_VAR) {
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
+        _ => own_dir(),
+    }
 }
 
 /// A stub, read into memory, with its slot located.
@@ -584,7 +606,7 @@ fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
 fn output_dir(dir: Option<&Path>) -> Result<PathBuf, String> {
     let dir = match dir {
         Some(dir) => dir.to_path_buf(),
-        None => own_dir()?,
+        None => default_dir()?,
     };
     fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
     Ok(dir)
@@ -723,7 +745,7 @@ fn check(file: &Path) -> i32 {
 /// `list`: print a directory's aliases as an alias file. Returns the exit
 /// status.
 fn list(dir: Option<&Path>) -> i32 {
-    let dir = match dir.map_or_else(own_dir, |d| Ok(d.to_path_buf())) {
+    let dir = match dir.map_or_else(default_dir, |d| Ok(d.to_path_buf())) {
         Ok(dir) => dir,
         Err(err) => return fail(&err),
     };
@@ -796,7 +818,7 @@ fn find_alias(target: &Path) -> Result<PathBuf, String> {
         .unwrap_or_default();
     // The default alias directory comes last, so it never shadows `$PATH`.
     // Failing to locate it only loses the fallback.
-    let fallback = own_dir().ok();
+    let fallback = default_dir().ok();
     dirs.extend(fallback.clone());
     if let Some(found) = dirs
         .iter()

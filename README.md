@@ -45,6 +45,13 @@ from a static build: they are all rea needs.
 `rea` looks for `rea-stub` next to itself, and by default writes
 aliases into its own directory too; `--stub` and `-o DIR` override both.
 
+`REA_ALIAS_DIR` changes the default alias directory for every command that
+has one: `new` and `patch` write there, `list` lists it, and `explain` and
+`inspect` look there last for a bare name. It suits `cargo install rea`,
+which puts rea in `~/.cargo/bin` among other programs; with
+`export REA_ALIAS_DIR=~/.local/bin` the aliases go there instead. `-o DIR`
+still overrides it, and an empty value counts as unset.
+
 **Tab completion:** `rea completions bash|zsh|fish` prints a completion
 script for subcommands, options and file names. For bash:
 
