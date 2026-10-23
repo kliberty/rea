@@ -1,19 +1,18 @@
-# Example alias file. Create the aliases with: rea patch aliases.txt
-#
-# One per line, `name = template`.
-#
-# {1}, {2}, ...  the alias's arguments, from the front
-# {-1}           the last argument ({-2} the one before, ...)
-# {@}, {@+}      every argument nothing else uses (zero or more / at least one)
-# {2..}, {..-1}  slices, stopping before the end: from the 2nd / all but the last
-# | && || ;      pipes and sequencing, as in sh
-#
-# `rea --help` has the full syntax.
-#
-# Quote with '...' or "..." as in sh; references still work inside "...".
-# A single command with no references gets its arguments appended (like a
-# shell alias). Otherwise the argument count must match exactly.
-
-flif270 = flif -d {1} - | convert -rotate 270 - - | flif -E 14 - {1}.rot.flif && mv {1}.rot.flif {1}
+convert-all-jpg = poolcmd2 -t 0 -q 0 convert-jpg \; {@+}
+convert-jpg = magick {1:F} ppm:- | cjpeg -quality 85 -outfile {1}.jpg{:N} && rm {1} && mv {1}.jpg {1:.}.jpg
+cp_2 = rsync -ahP -- {..-1://}/{..-1:/}{:E} {-1:D}
+cpt = cp -r -t {-1:D} -- {..-1:E}
+cptd = cp {..-1:E} -t {-1:D}
+latest-name = ls -t | grep {1} | head -n 1
 mkvize = ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv
-ll = ls -la
+mqtt-sub = docker run --rm hivemq/mqtt-cli sub --topic={@+} -h mini1.lan -T
+mv_ = rsync -ahP -- {..-1://}/{..-1:/}{:E} {-1:D} && rm -rf -- {..-1}
+mvt = mv -t {-1:D} -- {..-1:E}
+newest-file-of = ls -t {@+:E} | head -n 1
+odt2md = pandoc {1:F} -t gfm -o {2:N} --wrap=none
+scc = docker run --rm -it -v "{$PWD}:/pwd:ro" --network none ghcr.io/boyter/scc:master scc /pwd {@}
+shotlater5 = spectacle -b -n -f -d 5000 -o {$HOME}/Pictures/Screenshots/{1:/.}.png
+showpath = printenv PATH | tr ":" "\n"
+silounzip = unzip {1:F} -d {1:/.}{:N}
+symlink-into = realpath -z -- "{@+:E}" "{-1:D}" | xargs -0 -r ln -s --
+untar-monster = printf "%s\n" {@+:F} | perl -pe "s/((^.+?)\.tar(?:\..+)?)/\1\n\2/" | poolcmd2 -c 2 -t 1 rea eval "mkdir \{2:N\} && tar -xvf \{1:F\} -C \{2\}"
