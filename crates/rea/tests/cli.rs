@@ -622,6 +622,58 @@ fn bare_names_are_looked_up_on_path() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn alias_dir_variable_sets_the_default_directory() {
+    let dir = scratch("alias-dir-var");
+    let aliases = dir.join("aliases");
+    let other = dir.join("other");
+    let empty = dir.join("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let run = |args: &[&str]| {
+        bin()
+            .args(args)
+            .env("REA_ALIAS_DIR", &aliases)
+            .env("PATH", &empty)
+            .output()
+            .unwrap()
+    };
+
+    // `new` writes there, and creates it.
+    let out = run(&["new", "mv2", "mv {1} {1}.bak"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(aliases.join("mv2").is_file());
+    // `-o` still wins over the variable.
+    let out = run(&[
+        "new",
+        "cp2",
+        "cp {1} {1}.bak",
+        "-o",
+        other.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(other.join("cp2").is_file() && !aliases.join("cp2").exists());
+
+    // `list` lists it, and a bare name not on $PATH is found there.
+    assert_eq!(stdout(&run(&["list"])), "mv2 = mv {1} {1}.bak\n");
+    let out = run(&["inspect", "mv2"]);
+    assert_eq!(stdout(&out), "mv2 = mv {1} {1}.bak\n", "{}", stderr(&out));
+
+    // An empty value counts as unset: the default is this program's directory.
+    let out = bin()
+        .args(["inspect", "nosuch"])
+        .env("REA_ALIAS_DIR", "")
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    let own = PathBuf::from(env!("CARGO_BIN_EXE_rea"));
+    let expected = format!(
+        "not found on PATH or in {}",
+        own.parent().unwrap().display()
+    );
+    assert!(stderr(&out).contains(&expected), "{}", stderr(&out));
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // `eval -`: the template read from stdin.
 // ---------------------------------------------------------------------------
