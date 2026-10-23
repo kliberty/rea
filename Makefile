@@ -49,7 +49,7 @@ endif
 REA := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
-.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall completions aliases aliases-prune check-aliases clean
+.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall completions aliases aliases-prune check-aliases clean tag
 
 # Default target: show what's available, since there is no single obvious
 # action (unlike a typical `make` that just builds).
@@ -69,6 +69,7 @@ help:
 	@echo "make aliases-prune   the same, and remove aliases no longer in $(ALIASES)"
 	@echo "make check-aliases   validate $(ALIASES) without writing anything"
 	@echo "make clean           remove target/"
+	@echo "make tag				create a new git tag from the version number in Cargo.toml"
 	@echo
 	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)  COMPLETION_SHELL=$(COMPLETION_SHELL)"
 	@echo "  PIE=no builds non-position-independent binaries: faster alias"
@@ -155,3 +156,24 @@ check-aliases:
 
 clean:
 	cargo clean
+
+
+.PHONY: bump-minor bump-patch
+
+define cargo-ver-cmd
+python3 -c "import tomllib; ver=tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version']; print(ver)"
+endef
+export TEMPLATE_RAW = $(value cargo-ver-cmd)
+
+cargo-version:
+	rea new -o . $@ "$$TEMPLATE_RAW"
+
+.PHONY: bump-minor bump-patch
+bump-minor bump-patch: bump-%: | cargo-version
+	git diff --quiet HEAD || { echo "Not a clean workspace" >&2; exit 1; }
+	cargo set-version --bump $*
+	git add Cargo.toml Cargo.lock
+	git commit -m "Bump version to $$(./cargo-version)"
+
+tag: cargo-version
+	git tag v$$(./cargo-version)
