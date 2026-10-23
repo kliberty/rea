@@ -457,6 +457,17 @@ fn list_output_is_an_alias_file_that_recreates_the_aliases() {
 }
 
 #[test]
+fn positions_above_the_cap_are_refused() {
+    // The unit tests run with a smaller cap; this checks the real one, which
+    // the binary under test is built with. Refused at parse time, so it's fast.
+    let template = format!("echo {{{}}}", rea_core::max_position!() + 1);
+    let out = tool(&args!("eval", &template));
+    let expected = concat!("positions go up to ", rea_core::max_position!());
+    assert!(stderr(&out).contains(expected), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
 fn the_tool_itself_is_refused_as_a_stub() {
     // rea carries the marker bytes in its patching code. Treating that as
     // a slot would overwrite 4 KiB of the program, so it must refuse.

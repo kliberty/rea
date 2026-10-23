@@ -784,13 +784,23 @@ impl WordBuilder {
     }
 }
 
+/// `MAX_POSITION` as a literal, so `concat!` can put it in the help text.
+///
+/// A const can't be used there; `concat!` only takes literals.
+#[macro_export]
+macro_rules! max_position {
+    () => {
+        5000
+    };
+}
+
 /// The largest N a reference may use, in `{N}`, `{-N}` or a slice end.
 ///
 /// Arbitrary, but far beyond any real template. It bounds the arity search,
 /// which checks every argument count up to 2N+1 and so grows with N squared.
 /// Checking `{1..5000} {5000}` takes ~0.25 second on a release build.
 #[cfg(not(test))]
-const MAX_POSITION: usize = 5_000;
+const MAX_POSITION: usize = max_position!();
 // Arity checks are much slower on an unoptimized build, so we
 // reduce the number to make unit tests faster.
 #[cfg(test)]
