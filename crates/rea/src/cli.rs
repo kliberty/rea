@@ -901,6 +901,14 @@ fn save(file: &Path, dir: Option<&Path>, dry_run: bool) -> i32 {
         }
     };
 
+    // Write first, so the lines below only claim changes that happened.
+    let changed = merged.text != source || !target.exists();
+    if changed
+        && !dry_run
+        && let Err(err) = crate::replace::replace(&target, merged.text.as_bytes())
+    {
+        return fail(&err);
+    }
     // What changed goes to stdout, like `patch`, and the summary to stderr.
     let (update, add) = if dry_run {
         ("would update", "would add")
@@ -912,13 +920,6 @@ fn save(file: &Path, dir: Option<&Path>, dry_run: bool) -> i32 {
     }
     for name in &merged.added {
         println!("{add} {name}");
-    }
-    let changed = merged.text != source || !target.exists();
-    if changed
-        && !dry_run
-        && let Err(err) = crate::replace::replace(&target, merged.text.as_bytes())
-    {
-        return fail(&err);
     }
     eprintln!(
         "{}{} updated, {} added, {} unchanged",

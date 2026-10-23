@@ -8,7 +8,7 @@
 //! renaming would lose one of those.
 
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,7 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Give `path` the contents `data`, creating it if it doesn't exist.
 ///
 /// `path` must not be a symlink; the caller resolves it first, so the file
-/// replaced is the real one rather than the link. The temporary files this
+/// replaced is the real one rather than the link. A file this process can't
+/// open for writing is refused, as an editor would. The temporary files this
 /// makes go in the same directory, under names nobody else can predict or
 /// have taken. A failure leaves the original as it was; if it struck after
 /// the in-place write began, the message names the backup, which is kept.
@@ -27,6 +28,16 @@ pub fn replace(path: &Path, data: &[u8]) -> Result<(), String> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(format!("cannot read {shown}: {err}")),
     };
+    // A file this process may not write is left alone, whichever way it
+    // would be replaced: renaming over a read-only file would succeed, but
+    // the mode says not to change it. Opening without truncating changes
+    // nothing.
+    if existing.is_some() {
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|err| format!("cannot write {shown}: {err}"))?;
+    }
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -88,9 +99,19 @@ fn renaming_keeps(old: &Metadata, new: &Metadata) -> bool {
 /// original beside it until the new contents are safely on disk.
 fn rewrite_in_place(path: &Path, dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
     let shown = path.display();
+    // Open it before anything else: if it can't be written (another owner,
+    // no write permission), nothing has changed and no backup is needed.
+    // Reading through the same handle backs up exactly the file overwritten.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| format!("cannot write {shown}: {err}"))?;
+    let mut original = Vec::new();
+    file.read_to_end(&mut original)
+        .map_err(|err| format!("cannot read {shown}: {err}"))?;
     // Without a backup a crash mid-write could lose the file, so no backup
     // means no write.
-    let original = fs::read(path).map_err(|err| format!("cannot read {shown}: {err}"))?;
     let (backup, mut copy) = create_unique(dir, &format!(".{name}.rea-backup-"), 0o600)
         .map_err(|err| format!("cannot create a backup in {}: {err}", dir.display()))?;
     if let Err(err) = copy.write_all(&original).and_then(|()| copy.sync_all()) {
@@ -101,14 +122,14 @@ fn rewrite_in_place(path: &Path, dir: &Path, name: &str, data: &[u8]) -> Result<
         ));
     }
     // Write over the old contents, then cut off whatever is left of them.
-    let rewritten = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .and_then(|mut file| {
-            file.write_all(data)?;
-            file.set_len(data.len() as u64)?;
-            file.sync_all()
-        });
+    // From here on a failure may leave the file half-written, so the backup
+    // is kept and named.
+    let rewritten = (|| {
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(data)?;
+        file.set_len(data.len() as u64)?;
+        file.sync_all()
+    })();
     match rewritten {
         Ok(()) => {
             let _ = fs::remove_file(&backup);

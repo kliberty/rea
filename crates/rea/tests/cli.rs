@@ -952,6 +952,35 @@ fn save_keeps_symlinks_hard_links_and_permissions() {
 }
 
 #[test]
+fn save_refuses_a_file_it_may_not_write() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let (dir, aliases) = save_fixture("save-read-only");
+    let file = dir.join("aliases.txt");
+    fs::write(&file, "ll = ls\n").unwrap();
+    // Root may write any file, so there is nothing to refuse.
+    if fs::metadata(&file).unwrap().uid() == 0 {
+        eprintln!("skipped: running as root");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+    // Read-only, though renaming over it would work: refused, and the error
+    // mentions no backup, since nothing was changed.
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+    let out = save(&file, &aliases, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("Permission denied"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("backup"), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "ll = ls\n");
+    assert_eq!(names_in(&dir), ["aliases", "aliases.txt"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn save_refuses_aliases_that_disagree() {
     let (dir, aliases) = save_fixture("save-conflict");
     // A copy under another file name that holds a different `ll`.
