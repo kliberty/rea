@@ -784,7 +784,29 @@ impl WordBuilder {
     }
 }
 
-/// Parse one position: `N` or `-N`, N >= 1.
+/// `MAX_POSITION` as a literal, so `concat!` can put it in the help text.
+///
+/// A const can't be used there; `concat!` only takes literals.
+#[macro_export]
+macro_rules! max_position {
+    () => {
+        5000
+    };
+}
+
+/// The largest N a reference may use, in `{N}`, `{-N}` or a slice end.
+///
+/// Arbitrary, but far beyond any real template. It bounds the arity search,
+/// which checks every argument count up to 2N+1 and so grows with N squared.
+/// Checking `{1..5000} {5000}` takes ~0.25 second on a release build.
+#[cfg(not(test))]
+const MAX_POSITION: usize = max_position!();
+// Arity checks are much slower on an unoptimized build, so we
+// reduce the number to make unit tests faster.
+#[cfg(test)]
+const MAX_POSITION: usize = 100;
+
+/// Parse one position: `N` or `-N`, 1 <= N <= [`MAX_POSITION`].
 ///
 /// `body` is the whole reference body, for error messages.
 fn parse_index(text: &str, body: &str) -> Result<Index, String> {
@@ -798,15 +820,18 @@ fn parse_index(text: &str, body: &str) -> Result<Index, String> {
             "unknown reference `{{{body}}}`; expected {{N}}, {{-N}}, {{A..B}}, {{@}}, {{@+}} or {{0}}"
         ));
     }
-    // Overflow is the only way the parse can fail after the digit check.
-    let n: usize = digits
-        .parse()
-        .map_err(|_| format!("the number in `{{{body}}}` is too large"))?;
+    // Overflow is the only way the parse can fail after the digit check, and
+    // such a number is over the limit too.
+    let over = || format!("`{{{body}}}`: positions go up to {MAX_POSITION}");
+    let n: usize = digits.parse().map_err(|_| over())?;
     // 0 is only meaningful alone, as `{0}` (handled by the caller).
     if n == 0 {
         return Err(format!(
             "`{{{body}}}`: positions count from 1 at the front and from -1 at the back; 0 is not a position"
         ));
+    }
+    if n > MAX_POSITION {
+        return Err(over());
     }
     Ok(if back {
         Index::Back(n)
@@ -1642,10 +1667,11 @@ fn slice_range(slice: (Option<Index>, Option<Index>), count: usize) -> Option<(u
 
 /// Why one argument count doesn't work.
 enum Problem {
-    /// These positions would be used by nothing. Kept as positions rather
-    /// than text, so the whole-template error can describe them without
-    /// naming a particular count (see `describe_unused`).
-    Unused(Vec<usize>),
+    /// Some positions would be used by nothing. Which ones are left in
+    /// [`Scratch::unused`], as positions rather than text, so the
+    /// whole-template error can describe them without naming a particular
+    /// count (see `describe_unused`).
+    Unused,
     /// A gap in `{N}` / `{-N}` numbering that no slice covers.
     Gap {
         /// The highest-numbered reference in that direction.
@@ -1657,15 +1683,62 @@ enum Problem {
     Other(String),
 }
 
+/// Buffers for laying out a template at one count after another.
+///
+/// The arity search lays a template out at every count up to 2K+1, and most
+/// of these vectors grow with the count. Allocating them afresh for each
+/// count made that search fault in new pages every time on allocators that
+/// return freed memory to the kernel eagerly, such as musl's (about a
+/// million page faults for `{1..10000} {10000}`). Reusing them keeps the
+/// memory touched to that of the largest count.
+#[derive(Default)]
+struct Scratch {
+    /// Which index ({N}/{-N}) owns each position, 1-based (slot 0 unused).
+    owner: Vec<Option<Index>>,
+    /// Position of each `{N}` / `{-N}`, as in [`Layout::index`].
+    index: Vec<(Index, usize)>,
+    /// Each slice's range, as in [`Layout::slices`].
+    slices: Vec<(Slice, (usize, usize))>,
+    /// Positions `{@}` stands for, as in [`Layout::rest`].
+    rest: Vec<usize>,
+    /// After [`Problem::Unused`], the positions nothing uses, ascending.
+    unused: Vec<usize>,
+    /// Slice relations at the count being checked (see [`relations`]).
+    relations: Vec<bool>,
+}
+
+impl Scratch {
+    /// The layout left by a successful [`layout_into`].
+    fn into_layout(self) -> Layout {
+        Layout {
+            index: self.index,
+            rest: self.rest,
+            slices: self.slices,
+        }
+    }
+}
+
 /// Lay out the references for one argument count, checking the rules that
 /// don't involve comparing counts: indexes in range and distinct, `{@+}` and
 /// slices non-empty, `{@}` one run at an end when there are slices, every
-/// argument used.
-fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
+/// argument used. On success, `scratch` holds the layout.
+fn layout_into(shape: &Shape, count: usize, scratch: &mut Scratch) -> Result<(), Problem> {
+    let Scratch {
+        owner,
+        index,
+        slices,
+        rest,
+        unused,
+        relations: _,
+    } = scratch;
     // Each position may belong to at most one index ({N}/{-N}); {@} takes
     // whatever neither an index nor a slice uses.
-    let mut owner: Vec<Option<Index>> = vec![None; count + 1];
-    let mut index = Vec::with_capacity(shape.indexes.len());
+    owner.clear();
+    owner.resize(count + 1, None);
+    index.clear();
+    slices.clear();
+    rest.clear();
+    unused.clear();
     for &i in &shape.indexes {
         let position = i.position(count).ok_or_else(|| {
             Problem::Other(format!("{i} needs at least {} arguments", i.magnitude()))
@@ -1679,7 +1752,6 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
         index.push((i, position));
     }
     // Slices must be non-empty; that is what makes {2..} safe for `rm`.
-    let mut slices: Vec<(Slice, (usize, usize))> = Vec::with_capacity(shape.slices.len());
     for &slice in &shape.slices {
         let range = slice_range(slice, count).ok_or_else(|| {
             Problem::Other(format!("{} would be empty", Multi::Slice(slice.0, slice.1)))
@@ -1692,13 +1764,9 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // `{1} {2..-2} {@}` it repeated what the slice had already passed; "the
     // rest" means what nothing else mentions, and duplicating on purpose is
     // still possible by writing the slice twice.
-    let rest: Vec<usize> = if shape.rest.is_some() {
-        (1..=count)
-            .filter(|&p| owner[p].is_none() && !in_a_slice(p))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    if shape.rest.is_some() {
+        rest.extend((1..=count).filter(|&p| owner[p].is_none() && !in_a_slice(p)));
+    }
     if shape.rest == Some(true) && rest.is_empty() {
         return Err(Problem::Other("{@+} would be empty".into()));
     }
@@ -1782,18 +1850,12 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
     // slice; an argument that nothing uses is almost always a mistake (the
     // `flif270 *.flif` case: silently processing only the first file).
     if shape.rest.is_none() {
-        let unused: Vec<usize> = (1..=count)
-            .filter(|&p| owner[p].is_none() && !in_a_slice(p))
-            .collect();
+        unused.extend((1..=count).filter(|&p| owner[p].is_none() && !in_a_slice(p)));
         if !unused.is_empty() {
-            return Err(Problem::Unused(unused));
+            return Err(Problem::Unused);
         }
     }
-    Ok(Layout {
-        index,
-        rest,
-        slices,
-    })
+    Ok(())
 }
 
 /// How the slices relate to the indexes and to each other at one count:
@@ -1802,13 +1864,22 @@ fn layout(shape: &Shape, count: usize) -> Result<Layout, Problem> {
 ///
 /// The result is only meant to be compared with the result at another count.
 fn relations(shape: &Shape, count: usize) -> Vec<bool> {
+    let mut signature = Vec::new();
+    relations_into(shape, count, &mut signature);
+    signature
+}
+
+/// [`relations`], written into `signature` (cleared first), so the arity
+/// search can reuse one buffer.
+fn relations_into(shape: &Shape, count: usize, signature: &mut Vec<bool>) {
+    signature.clear();
+    // One entry per slice of the template, which is a handful at most.
     let ranges: Vec<Option<(usize, usize)>> = shape
         .slices
         .iter()
         .map(|&s| slice_range(s, count))
         .collect();
     let inside = |p: usize, r: Option<(usize, usize)>| r.is_some_and(|(lo, hi)| lo <= p && p <= hi);
-    let mut signature = Vec::new();
     for &range in &ranges {
         // Membership of each index in this slice.
         for &i in &shape.indexes {
@@ -1824,22 +1895,29 @@ fn relations(shape: &Shape, count: usize) -> Vec<bool> {
             signature.extend([overlap, contains(first, second), contains(second, first)]);
         }
     }
-    signature
 }
 
 /// Check every rule for one count, including that slices relate to the
 /// other references as they do with `plenty` arguments, a count at which every
-/// relation has settled (see [`compute_arity`]).
-fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Problem> {
-    let layout = layout(shape, count)?;
+/// relation has settled (see [`compute_arity`]). `settled` is
+/// `relations(shape, plenty)`, worked out once by the caller. On success,
+/// `scratch` holds the layout.
+fn check_count(
+    shape: &Shape,
+    count: usize,
+    settled: &[bool],
+    scratch: &mut Scratch,
+) -> Result<(), Problem> {
+    layout_into(shape, count, scratch)?;
     // E.g. in `{1..4} {-1}`, with 3 arguments the slice would take the last
     // one too, which nobody writing that template intends.
-    if relations(shape, count) != relations(shape, plenty) {
+    relations_into(shape, count, &mut scratch.relations);
+    if scratch.relations != settled {
         return Err(Problem::Other(format!(
             "with {count} arguments, a slice would share different arguments with the other references than with more"
         )));
     }
-    Ok(layout)
+    Ok(())
 }
 
 /// Work out which argument counts a template accepts.
@@ -1852,10 +1930,15 @@ fn check_count(shape: &Shape, count: usize, plenty: usize) -> Result<Layout, Pro
 /// count works.
 fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
     let plenty = 2 * shape.max_magnitude() + 1;
+    let settled = relations(shape, plenty);
+    // One set of buffers for every count (see `Scratch`).
+    let mut scratch = Scratch::default();
     let mut counts: Vec<usize> = (0..plenty)
-        .filter(|&n| check_count(shape, n, plenty).is_ok())
+        .filter(|&n| check_count(shape, n, &settled, &mut scratch).is_ok())
         .collect();
-    let mut from = check_count(shape, plenty, plenty).is_ok().then_some(plenty);
+    let mut from = check_count(shape, plenty, &settled, &mut scratch)
+        .is_ok()
+        .then_some(plenty);
     // Fold a trailing run of accepted counts into the open-ended part, so
     // "at least 2" isn't spelled "2, 3, 4 or at least 5".
     while let (Some(&last), Some(start)) = (counts.last(), from) {
@@ -1869,8 +1952,8 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
         // The problem at `plenty` is the one every larger count shares, so it
         // is the one to explain; but `plenty` itself is an internal choice and
         // must not appear in the message.
-        let reason = match check_count(shape, plenty, plenty) {
-            Err(Problem::Unused(positions)) => describe_unused(shape, &positions, plenty),
+        let reason = match check_count(shape, plenty, &settled, &mut scratch) {
+            Err(Problem::Unused) => describe_unused(shape, &scratch.unused, plenty),
             Err(Problem::Gap { used, missing }) => {
                 format!("{used} is used but {missing} is not, and no slice covers that argument")
             }
@@ -2136,12 +2219,15 @@ impl Template {
         // verdict at `plenty`, which `compute_arity` relies on too (tested in
         // `runtime_count_check_matches_arity`).
         let plenty = 2 * self.shape.max_magnitude() + 1;
-        let layout = check_count(&self.shape, args.len(), plenty).map_err(|_| {
+        let settled = relations(&self.shape, plenty);
+        let mut scratch = Scratch::default();
+        check_count(&self.shape, args.len(), &settled, &mut scratch).map_err(|_| {
             ExpandError::WrongArgCount {
                 arity: self.arity().clone(),
                 got: args.len(),
             }
         })?;
+        let layout = scratch.into_layout();
         let mut findings = Findings {
             problems: Vec::new(),
             env: Vec::new(),
@@ -2636,6 +2722,36 @@ mod tests {
         for (src, offset) in cases {
             let err = parse(src).expect_err(src);
             assert_eq!(err.offset, Some(offset), "{src}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn positions_are_capped() {
+        // The largest position is fine, wherever it appears.
+        assert!(
+            parse(&format!("echo {{1..{}}} {{{}}}", MAX_POSITION, MAX_POSITION)).is_ok()
+        );
+        assert!(
+            parse(&format!("echo {{-{}}} {{-{}..}}", MAX_POSITION, MAX_POSITION)).is_ok()
+        );
+        // One more is refused, in {N}, {-N} and either slice end, and so is a
+        // number too large for usize, with the same message.
+        for src in [
+            format!("echo {{1..{}}} {{{}}}", MAX_POSITION + 1, MAX_POSITION + 1),
+            format!("echo {{-{}}} {{@}}", MAX_POSITION + 1),
+            format!("echo {{{}..}} {{@}}", MAX_POSITION + 1),
+            format!("echo {{..-{}}} {{@}}", MAX_POSITION + 1),
+            format!("echo {{..{}}} {{@}}", MAX_POSITION + 1),
+            "echo {99999999999999999999999} {@}".to_string(),
+        ] {
+            let err = parse(&src).expect_err(&src);
+            assert!(
+                err.message
+                    .contains(&format!("positions go up to {}", MAX_POSITION)),
+                "{src}: {}",
+                err.message
+            );
+            assert_eq!(err.offset, Some(5), "{src}");
         }
     }
 

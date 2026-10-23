@@ -30,7 +30,8 @@ const SCAN_LIMIT: u64 = 64 * 1024 * 1024;
 /// The template language, shown by `rea --help`, `new --help` and
 /// `eval --help`. Constraint on change: keep it in step with the parser
 /// (rea_core::template) and the README's syntax table.
-const SYNTAX: &str = "\
+const SYNTAX: &str = concat!(
+    "\
 Template syntax:
   Words and quoting work as in sh: '...' is literal, \"...\" is literal except
   for {...} references and the escapes \\\" \\\\ \\{ \\} \\$ \\`, and \\x is a literal x.
@@ -78,7 +79,11 @@ Template syntax:
   -I{@} gives -Ia -Ib, and nothing at all when {@} is empty.
 
   Every argument must be used, and numbering has no gaps: {3} needs {2},
-  or a slice covering it ({@} doesn't count). The count is exact unless {@},
+  or a slice covering it ({@} doesn't count). Numbers go up to \
+",
+    rea_core::max_position!(),
+    ", in
+  references and slices alike. The count is exact unless {@},
   {@+} or a slice is used. A single command with no references (not even
   {0} or {$NAME}) gets {@} appended, like a shell alias.
 
@@ -92,7 +97,8 @@ Examples:
   rea new relink 'rm -f {@} && symlink {-1} {@}'
   rea new thumb 'convert {1:F} -resize 50% {1://}/{1:/.}-thumb.jpg'
   rea new tardir 'tar -C {1:D//} -czf {1:/}.tar.gz {1:/}'
-  rea new backup 'rsync -ahP {@+} {$BACKUP_DIR:D}'";
+  rea new backup 'rsync -ahP {@+} {$BACKUP_DIR:D}'"
+);
 
 /// Command aliases with numbered arguments and real pipelines, no shell.
 ///
