@@ -175,16 +175,22 @@ fn create_unique(dir: &Path, prefix: &str, mode: u32) -> io::Result<(PathBuf, Fi
     ))
 }
 
-/// Eight hex digits that differ between calls and between processes.
+/// Eight hex digits that usually differ between calls.
 ///
-/// Not cryptographic: `create_new` already makes a guessed name harmless, so
-/// the suffix only has to avoid collisions.
+/// The clock, the process ID and `attempt` all feed in, so two calls give
+/// the same suffix only if they pass the same `attempt` in the same clock
+/// tick and process, or, rarely, by chance, since only 32 bits are kept.
+/// Not cryptographic, and it needn't be: `create_new` makes a collision or a
+/// guessed name harmless, and the retry after one passes the next `attempt`,
+/// which changes the result.
 fn suffix(attempt: u32) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     // Mix the time, process and attempt so neighbours don't step in line.
     let mixed = (nanos as u64) ^ (u64::from(std::process::id()) << 32) ^ u64::from(attempt);
+    // 2^64 / golden ratio (Knuth's multiplicative hashing): spreads small
+    // differences in `mixed` across the high bits kept below.
     let hashed = mixed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     format!("{:08x}", (hashed >> 32) as u32)
 }
