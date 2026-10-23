@@ -138,6 +138,70 @@ pub fn parse_lenient(src: &str) -> (Vec<Entry<'_>>, Vec<FileError>) {
     (entries, errors)
 }
 
+/// The comment [`merge`] puts above the aliases it appends.
+pub const ADDED_MARKER: &str = "# added by rea save";
+
+/// Append definition lines to an alias file's text, under [`ADDED_MARKER`].
+///
+/// - A file with nothing but blank lines gets the lines alone, as `rea list`
+///   would print them.
+/// - If the file already ends with a marker block (its last comment is the
+///   marker, followed only by definitions and blank lines), the lines join
+///   that block, after its last definition, instead of starting another.
+/// - Otherwise a new block starts at the end: a blank line, unless the file
+///   already ends with one, then the marker, then the lines.
+///
+/// Lines end with the file's own line ending, `\r\n` if it uses any.
+fn append(text: &mut String, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let block: String = lines
+        .iter()
+        .map(|line| format!("{line}{newline}"))
+        .collect();
+    if text.trim().is_empty() {
+        *text = block;
+        return;
+    }
+    // Split the file into its content, the line ending after the last line
+    // with content (none if the file doesn't end with one), and the blank
+    // lines after that.
+    let tail = text.split_off(text.trim_end().len());
+    let (ending, blanks) = ["\r\n", "\n"]
+        .iter()
+        .find_map(|end| tail.strip_prefix(end).map(|rest| (*end, rest)))
+        .unwrap_or((newline, tail.as_str()));
+    // The last comment decides: the marker means the file ends with a block
+    // of added aliases already, since only definitions can follow it.
+    let reuse = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with('#'))
+        .is_some_and(|comment| comment == ADDED_MARKER);
+    text.push_str(ending);
+    if reuse {
+        // Join the block, keeping the blank lines after it at the end.
+        text.push_str(&block);
+        text.push_str(blanks);
+    } else {
+        // The file's own blank lines separate the new block, or one is added.
+        if blanks.is_empty() {
+            text.push_str(newline);
+        } else {
+            text.push_str(blanks);
+            if !blanks.ends_with('\n') {
+                text.push_str(newline);
+            }
+        }
+        text.push_str(ADDED_MARKER);
+        text.push_str(newline);
+        text.push_str(&block);
+    }
+}
+
 /// The result of [`merge`]: the new file text and what changed in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merged {
@@ -158,9 +222,11 @@ pub struct Merged {
 /// An alias the file already defines keeps its line. If its template
 /// differs, only the template is replaced: everything up to the `=` and the
 /// blanks after it stays, so hand alignment survives. Aliases the file
-/// doesn't define are appended at the end, one `name = template` line each,
-/// in the order given. Every other byte, comments, blank lines, definitions
-/// of aliases not given and line endings included, is copied unchanged.
+/// doesn't define are appended, one `name = template` line each, in the
+/// order given, under an [`ADDED_MARKER`] comment that sets them apart from
+/// whatever section the file ends with. Every other byte, comments, blank
+/// lines, definitions of aliases not given and line endings included, is
+/// copied unchanged.
 ///
 /// Templates are compared and written trimmed, as the file stores them.
 /// `aliases` must have unique, valid names and single-line, non-blank
@@ -212,19 +278,12 @@ pub fn merge(src: &str, aliases: &[(&str, &str)]) -> Result<Merged, Vec<FileErro
         text.push_str(template);
         text.push_str(ending);
     }
-    // Appended lines use the file's own line ending, after a final newline
-    // if the last line lacks one.
-    if !added.is_empty() {
-        let newline = if src.contains("\r\n") { "\r\n" } else { "\n" };
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push_str(newline);
-        }
-        for &(name, template) in aliases {
-            if !by_name.contains_key(name) {
-                text.push_str(&format!("{name} = {}{newline}", template.trim()));
-            }
-        }
-    }
+    let new_lines: Vec<String> = aliases
+        .iter()
+        .filter(|(name, _)| !by_name.contains_key(name))
+        .map(|(name, template)| format!("{name} = {}", template.trim()))
+        .collect();
+    append(&mut text, &new_lines);
     Ok(Merged {
         text,
         updated,
@@ -263,20 +322,48 @@ mod tests {
             &[("ll", "  ls -la "), ("b", "echo b"), ("a", "echo a")],
         )
         .unwrap();
-        assert_eq!(merged.text, "ll = ls -la\nb = echo b\na = echo a\n");
+        assert_eq!(
+            merged.text,
+            "ll = ls -la\n\n# added by rea save\nb = echo b\na = echo a\n"
+        );
         assert_eq!(merged.added, vec!["b".to_owned(), "a".to_owned()]);
         assert_eq!(merged.unchanged, 1);
         // An empty file just gets the lines; CRLF files get CRLF lines.
         assert_eq!(merge("", &[("a", "x")]).unwrap().text, "a = x\n");
         assert_eq!(
             merge("# c\r\n", &[("a", "x")]).unwrap().text,
-            "# c\r\na = x\r\n"
+            "# c\r\n\r\n# added by rea save\r\na = x\r\n"
         );
         // Nothing to do leaves the text identical.
         assert_eq!(
             merge("ll = ls -la\n", &[("ll", "ls -la")]).unwrap().text,
             "ll = ls -la\n"
         );
+    }
+
+    #[test]
+    fn merge_puts_added_aliases_under_one_marker() {
+        let add = |src: &str| merge(src, &[("n", "new")]).unwrap().text;
+        // A file ending in a blank line uses it as the separator.
+        assert_eq!(add("a = x\n\n"), "a = x\n\n# added by rea save\nn = new\n");
+        // An existing block at the end is joined, before its trailing blanks.
+        assert_eq!(
+            add("a = x\n\n# added by rea save\nb = y\n\n"),
+            "a = x\n\n# added by rea save\nb = y\nn = new\n\n"
+        );
+        // ...even when what's left of it is just the marker.
+        assert_eq!(
+            add("a = x\n\n# added by rea save\n"),
+            "a = x\n\n# added by rea save\nn = new\n"
+        );
+        // A marker followed by another comment no longer ends the file, so a
+        // new block starts.
+        assert_eq!(
+            add("# added by rea save\nb = y\n# video\nc = z\n"),
+            "# added by rea save\nb = y\n# video\nc = z\n\n# added by rea save\nn = new\n"
+        );
+        // A file of blank lines only is treated as empty: no marker.
+        assert_eq!(add("\n\n"), "n = new\n");
     }
 
     #[test]

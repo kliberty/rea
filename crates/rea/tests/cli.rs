@@ -734,7 +734,7 @@ fn save_updates_lines_in_place_and_appends_new_aliases() {
     assert_eq!(stdout(&out), "updated ll (line 2)\nadded enc\n");
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
-        "# mine\nll    = ls -la\n\nold = echo kept\nenc = ffmpeg -i {1} {1}.mkv\n"
+        "# mine\nll    = ls -la\n\nold = echo kept\n\n# added by rea save\nenc = ffmpeg -i {1} {1}.mkv\n"
     );
     // Saving again changes nothing, and the result patches cleanly.
     let out = save(&file, &aliases, &[]);
