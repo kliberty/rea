@@ -66,7 +66,8 @@ completes under its own name; name the file after it too. An alias for rea
 `complete -F _rea r` after loading it covers the alias too.
 
 **Upgrading:** `make install aliases`. The new stub differs from the old one,
-so every alias is rewritten onto it. `make uninstall` removes the two binaries
+so every alias is rewritten onto it, listed as "updated … (stub only)" unless
+its definition changed too. `make uninstall` removes the two binaries
 and leaves the aliases, which keep working on their own.
 
 **Upgrading from aliasmux:** rea was called aliasmux before. `make install

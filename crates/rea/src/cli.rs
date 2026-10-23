@@ -560,7 +560,11 @@ fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Wrote {
     Created,
+    /// An alias with a different definition was updated.
     Updated,
+    /// An alias with the same definition was rewritten onto a different
+    /// stub, as after upgrading rea.
+    StubOnly,
     /// Same bytes already there; the file (and its mtime) were left alone.
     Unchanged,
     /// A non-alias file was replaced, which only `--replace-non-aliases` allows.
@@ -591,6 +595,8 @@ fn write_alias(
     {
         Existing::Missing => Wrote::Created,
         Existing::Alias(old) if old == bytes => return Ok(Wrote::Unchanged),
+        // Same definition in different bytes: only the stub changed.
+        Existing::Alias(old) if alias_in(&old) == Some((name, template)) => Wrote::StubOnly,
         Existing::Alias(_) => Wrote::Updated,
         Existing::Other if replace_non_aliases => Wrote::Replaced,
         Existing::Other => {
@@ -656,9 +662,11 @@ fn report(wrote: Wrote, path: &Path, dry_run: bool) {
         (Wrote::Unchanged, _) => return,
         (Wrote::Created, false) => format!("created {path}"),
         (Wrote::Updated, false) => format!("updated {path}"),
+        (Wrote::StubOnly, false) => format!("updated {path} (stub only)"),
         (Wrote::Replaced, false) => format!("replaced {path}, which was not a rea alias"),
         (Wrote::Created, true) => format!("would create {path}"),
         (Wrote::Updated, true) => format!("would update {path}"),
+        (Wrote::StubOnly, true) => format!("would update {path} (stub only)"),
         (Wrote::Replaced, true) => format!("would replace {path}, which is not a rea alias"),
     };
     println!("{line}");
@@ -735,7 +743,8 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool, dry_run: b
     };
 
     // Write the selected aliases, counting outcomes for the summary.
-    let (mut written, mut replaced, mut unchanged, mut failures) = (0, 0, 0, 0);
+    let (mut created, mut updated, mut stub_only, mut replaced) = (0, 0, 0, 0);
+    let (mut unchanged, mut failures) = (0, 0);
     for entry in entries
         .iter()
         .filter(|e| names.is_empty() || names.iter().any(|n| n == e.name))
@@ -748,13 +757,18 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool, dry_run: b
             output.replace_non_aliases,
             dry_run,
         ) {
-            Ok(Wrote::Unchanged) => unchanged += 1,
             Ok(wrote) => {
                 report(wrote, &dir.join(entry.name), dry_run);
-                if wrote == Wrote::Replaced {
-                    replaced += 1;
-                } else {
-                    written += 1;
+                match wrote {
+                    Wrote::Created => created += 1,
+                    Wrote::Updated => updated += 1,
+                    // Counted as updates, with the breakdown in the summary.
+                    Wrote::StubOnly => {
+                        updated += 1;
+                        stub_only += 1;
+                    }
+                    Wrote::Replaced => replaced += 1,
+                    Wrote::Unchanged => unchanged += 1,
                 }
             }
             Err(err) => failures += fail(&err),
@@ -792,11 +806,18 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool, dry_run: b
             Err(err) => failures += fail(&err),
         }
     }
-    // The summary goes to stderr, so stdout lists only what changed.
+    // The summary goes to stderr, so stdout lists only what changed. One
+    // count per verb on the lines above, and a dry run says so first, since
+    // the counts are of what would happen.
+    let stub_note = if stub_only > 0 {
+        format!(" ({stub_only} stub only)")
+    } else {
+        String::new()
+    };
     eprintln!(
-        "{written} written, {replaced} replaced, {unchanged} unchanged, {removed} removed, \
-         {failures} failed{}",
-        if dry_run { " (dry run)" } else { "" }
+        "{}{created} created, {updated} updated{stub_note}, {replaced} replaced, \
+         {unchanged} unchanged, {removed} removed, {failures} failed",
+        if dry_run { "dry run: " } else { "" }
     );
     if failures > 0 { 1 } else { 0 }
 }
@@ -900,11 +921,11 @@ fn save(file: &Path, dir: Option<&Path>, dry_run: bool) -> i32 {
         return fail(&err);
     }
     eprintln!(
-        "{} updated, {} added, {} unchanged{}",
+        "{}{} updated, {} added, {} unchanged",
+        if dry_run { "dry run: " } else { "" },
         merged.updated.len(),
         merged.added.len(),
-        merged.unchanged,
-        if dry_run { " (dry run)" } else { "" }
+        merged.unchanged
     );
     0
 }

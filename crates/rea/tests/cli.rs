@@ -376,6 +376,48 @@ fn new_replaces_non_alias_files_only_when_told_to() {
 }
 
 #[test]
+fn patch_tells_stub_only_updates_from_definition_changes() {
+    let dir = scratch("patch-stub-only");
+    let file = dir.join("aliases.txt");
+    let out_dir = dir.join("aliases");
+    fs::write(&file, "same = true\nchange = printf a\n").unwrap();
+    let patch = |extra: &[&OsStr]| {
+        let mut command = bin();
+        command
+            .arg("patch")
+            .arg(&file)
+            .arg("-o")
+            .arg(&out_dir)
+            .args(extra);
+        command.output().unwrap()
+    };
+    assert!(patch(&[]).status.success());
+
+    // A different stub, as after an upgrade: the same one plus a byte.
+    let mut image = fs::read(env!("CARGO_BIN_EXE_rea-stub")).unwrap();
+    image.push(0);
+    let stub = dir.join("rea-stub");
+    fs::write(&stub, image).unwrap();
+    fs::write(&file, "same = true\nchange = printf b\n").unwrap();
+    let out = patch(&[OsStr::new("--stub"), stub.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<String> = stdout(&out)
+        .lines()
+        .map(|l| l.replace(out_dir.to_str().unwrap(), "DIR"))
+        .collect();
+    assert_eq!(
+        lines,
+        ["updated DIR/same (stub only)", "updated DIR/change"]
+    );
+    assert!(
+        stderr(&out).starts_with("0 created, 2 updated (1 stub only), 0 replaced"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn patch_dry_run_refuses_and_replaces_as_a_real_run_would() {
     let dir = scratch("patch-dry-run");
     let file = dir.join("aliases.txt");
@@ -409,7 +451,11 @@ fn patch_dry_run_refuses_and_replaces_as_a_real_run_would() {
         "{}",
         stderr(&out)
     );
-    assert!(stderr(&out).contains("1 written, 0 replaced, 0 unchanged, 0 removed, 1 failed"));
+    assert!(
+        stderr(&out).contains(
+            "dry run: 1 created, 0 updated, 0 replaced, 0 unchanged, 0 removed, 1 failed"
+        )
+    );
     // ...and with --replace-non-aliases, reported as a replacement, untouched.
     let out = patch(&["--dry-run", "--replace-non-aliases"]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -420,7 +466,7 @@ fn patch_dry_run_refuses_and_replaces_as_a_real_run_would() {
         stdout(&out)
     );
     assert!(
-        stderr(&out).contains("1 written, 1 replaced"),
+        stderr(&out).contains("dry run: 1 created, 0 updated, 1 replaced"),
         "{}",
         stderr(&out)
     );
@@ -494,7 +540,9 @@ fn patch_writes_only_changes_and_prunes_removed_aliases() {
         ["would update DIR/change", "would remove DIR/gone"]
     );
     assert!(
-        stderr(&out).contains("1 written, 0 replaced, 1 unchanged, 1 removed, 0 failed (dry run)"),
+        stderr(&out).contains(
+            "dry run: 0 created, 1 updated, 0 replaced, 1 unchanged, 1 removed, 0 failed"
+        ),
         "{}",
         stderr(&out)
     );
@@ -504,7 +552,8 @@ fn patch_writes_only_changes_and_prunes_removed_aliases() {
     // Only the changed alias is rewritten; the deleted one is removed.
     assert_eq!(changed(&out), ["updated DIR/change", "removed DIR/gone"]);
     assert!(
-        stderr(&out).contains("1 written, 0 replaced, 1 unchanged, 1 removed, 0 failed"),
+        stderr(&out)
+            .starts_with("0 created, 1 updated, 0 replaced, 1 unchanged, 1 removed, 0 failed"),
         "{}",
         stderr(&out)
     );
