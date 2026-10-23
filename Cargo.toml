@@ -5,7 +5,7 @@ resolver = "3"
 members = ["crates/core", "crates/rea"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kliberty/rea"
@@ -13,7 +13,7 @@ repository = "https://github.com/kliberty/rea"
 [workspace.dependencies]
 # The version must match [workspace.package] above: crates.io needs one, and
 # cargo drops the path when packaging. Bump both together.
-rea-core = { path = "crates/core", version = "0.7.1" }
+rea-core = { path = "crates/core", version = "0.7.2" }
 clap = { version = "4.6.7", features = ["derive"] }
 clap_complete = "4.6.11"
 libc = "0.2.190"
