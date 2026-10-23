@@ -12,19 +12,11 @@ Ideas that are designed or agreed on but not built yet. Newest first.
   - categories = ["command-line-utilities"]
 
 
-## Add dry run flag for patch, and other patch improvements
+## Keep patch away from rea's own files
 
-Show what will be updated and removed (especially with
---replace-non-aliases).
-
-Useful with the dangerous snippet `rea patch --prune <(echo)` to remove
-everything.
-
-- Don't let the tool remove or overwrite its own binary or the stub
-  (autodetected or manually specified `--stub`)
-- Make the updated/written/removed/replaced more visible (especially when a
-  non-alias is **replaced**)
-    - Maybe give replaced its own count in the summary.
+Don't let the tool remove or overwrite its own binary or the stub
+(autodetected or manually specified `--stub`), even with
+`--replace-non-aliases`.
 
 ## Gather the stub's hot code into fewer pages
 

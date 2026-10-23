@@ -367,6 +367,68 @@ fn new_replaces_non_alias_files_only_when_told_to() {
         "--replace-non-aliases"
     ]);
     assert!(stdout(&out).starts_with("replaced "), "{}", stderr(&out));
+    assert!(
+        stdout(&out).ends_with(", which was not a rea alias\n"),
+        "{}",
+        stdout(&out)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn patch_dry_run_refuses_and_replaces_as_a_real_run_would() {
+    let dir = scratch("patch-dry-run");
+    let file = dir.join("aliases.txt");
+    let out_dir = dir.join("new-dir");
+    fs::write(&file, "notes = true\nother = false\n").unwrap();
+    let patch = |extra: &[&str]| {
+        let mut command = bin();
+        command
+            .arg("patch")
+            .arg(&file)
+            .arg("-o")
+            .arg(&out_dir)
+            .args(extra);
+        command.output().unwrap()
+    };
+
+    // A missing DIR isn't created; everything in it would be.
+    let out = patch(&["--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).lines().count(), 2);
+    assert!(stdout(&out).lines().all(|l| l.starts_with("would create ")));
+    assert!(!out_dir.exists());
+
+    // A file that isn't an alias is refused exactly as it would be...
+    fs::create_dir_all(&out_dir).unwrap();
+    fs::write(out_dir.join("notes"), "precious").unwrap();
+    let out = patch(&["--dry-run"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("is not a rea alias"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stderr(&out).contains("1 written, 0 replaced, 0 unchanged, 0 removed, 1 failed"));
+    // ...and with --replace-non-aliases, reported as a replacement, untouched.
+    let out = patch(&["--dry-run", "--replace-non-aliases"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("would replace ")
+            && stdout(&out).contains(", which is not a rea alias"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("1 written, 1 replaced"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir.join("notes")).unwrap(),
+        "precious"
+    );
+    assert!(!out_dir.join("other").exists());
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -418,16 +480,31 @@ fn patch_writes_only_changes_and_prunes_removed_aliases() {
         .unwrap();
 
     fs::write(&file, "keep = true\nchange = printf b\n").unwrap();
+    // A dry run reports the same changes and makes none of them.
+    let changed = |out: &Output| -> Vec<String> {
+        stdout(out)
+            .lines()
+            .map(|l| l.replace(out_dir.to_str().unwrap(), "DIR"))
+            .collect()
+    };
+    let out = patch(&["--prune", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        changed(&out),
+        ["would update DIR/change", "would remove DIR/gone"]
+    );
+    assert!(
+        stderr(&out).contains("1 written, 0 replaced, 1 unchanged, 1 removed, 0 failed (dry run)"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(out_dir.join("gone").exists());
     let out = patch(&["--prune"]);
     assert!(out.status.success(), "{}", stderr(&out));
     // Only the changed alias is rewritten; the deleted one is removed.
-    let lines: Vec<String> = stdout(&out)
-        .lines()
-        .map(|l| l.replace(out_dir.to_str().unwrap(), "DIR"))
-        .collect();
-    assert_eq!(lines, ["updated DIR/change", "removed DIR/gone"]);
+    assert_eq!(changed(&out), ["updated DIR/change", "removed DIR/gone"]);
     assert!(
-        stderr(&out).contains("1 written, 1 unchanged, 1 removed, 0 failed"),
+        stderr(&out).contains("1 written, 0 replaced, 1 unchanged, 1 removed, 0 failed"),
         "{}",
         stderr(&out)
     );

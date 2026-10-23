@@ -102,6 +102,7 @@ ll      = ls -la
 rea check aliases.txt                 # validate only
 rea patch aliases.txt                 # create or update them all
 rea patch aliases.txt --prune         # ...and remove aliases no longer in the file
+rea patch aliases.txt --dry-run       # ...only print what it would do
 rea patch aliases.txt mkvize          # just one
 ```
 
@@ -111,10 +112,12 @@ rea patch aliases.txt mkvize          # just one
   and reports every problem at once.
 - **Only changes are written.** An alias whose definition is unchanged is left
   alone, timestamp included; `patch` lists only what it created, updated or
-  removed.
+  removed, and `--dry-run` lists what it would do without doing it.
 - **Other files are safe.** An existing file is replaced only if it is a
   rea alias. Anything else (another program, the tool, the stub) needs
-  `--replace-non-aliases`. `--prune` only ever removes aliases.
+  `--replace-non-aliases`, and is reported as such ("replaced FILE, which
+  was not a rea alias") and counted apart in the summary. `--prune` only ever
+  removes aliases.
 
 The aliases themselves are the record. `rea list DIR` prints the aliases
 in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
