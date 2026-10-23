@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// A command for the binary under test.
@@ -671,6 +671,176 @@ fn alias_dir_variable_sets_the_default_directory() {
         own.parent().unwrap().display()
     );
     assert!(stderr(&out).contains(&expected), "{}", stderr(&out));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// `save`: updating an alias file from a directory.
+// ---------------------------------------------------------------------------
+
+/// A scratch directory with aliases `ll` and `enc` in `DIR/aliases`.
+fn save_fixture(tag: &str) -> (PathBuf, PathBuf) {
+    let dir = scratch(tag);
+    let aliases = dir.join("aliases");
+    for (name, template) in [("ll", "ls -la"), ("enc", "ffmpeg -i {1} {1}.mkv")] {
+        let out = tool(&args![
+            "new",
+            name,
+            template,
+            "-o",
+            aliases.to_str().unwrap()
+        ]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    (dir, aliases)
+}
+
+/// Run `rea save FILE DIR` plus extra arguments.
+fn save(file: &Path, aliases: &Path, extra: &[&str]) -> Output {
+    bin()
+        .arg("save")
+        .arg(file)
+        .arg(aliases)
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+/// Names in `dir`, sorted, to check that no temporary files are left.
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn save_updates_lines_in_place_and_appends_new_aliases() {
+    let (dir, aliases) = save_fixture("save-merge");
+    let file = dir.join("aliases.txt");
+    let original = "# mine\nll    = ls -l\n\nold = echo kept\n";
+    fs::write(&file, original).unwrap();
+
+    // A dry run reports and writes nothing.
+    let out = save(&file, &aliases, &["--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "would update ll (line 2)\nwould add enc\n");
+    assert_eq!(fs::read_to_string(&file).unwrap(), original);
+
+    let out = save(&file, &aliases, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "updated ll (line 2)\nadded enc\n");
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "# mine\nll    = ls -la\n\nold = echo kept\nenc = ffmpeg -i {1} {1}.mkv\n"
+    );
+    // Saving again changes nothing, and the result patches cleanly.
+    let out = save(&file, &aliases, &[]);
+    assert_eq!(stderr(&out), "0 updated, 0 added, 2 unchanged\n");
+    let check = tool(&args!["check", file.as_os_str()]);
+    assert!(check.status.success(), "{}", stderr(&check));
+    assert_eq!(names_in(&dir), ["aliases", "aliases.txt"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_creates_a_missing_file_and_refuses_one_it_cannot_parse() {
+    let (dir, aliases) = save_fixture("save-new");
+    let file = dir.join("new.txt");
+    let out = save(&file, &aliases, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "enc = ffmpeg -i {1} {1}.mkv\nll = ls -la\n"
+    );
+
+    // A duplicate name is reported with its line, and nothing is written.
+    let bad = "ll = ls\nll = ls -l\n";
+    fs::write(&file, bad).unwrap();
+    let out = save(&file, &aliases, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("new.txt:2: alias `ll` is already defined"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), bad);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_keeps_symlinks_hard_links_and_permissions() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    let (dir, aliases) = save_fixture("save-links");
+
+    // A symlink stays a link; the file it points to is updated.
+    let real = dir.join("real.txt");
+    let link = dir.join("link.txt");
+    fs::write(&real, "ll = ls\n").unwrap();
+    symlink(&real, &link).unwrap();
+    let out = save(&link, &aliases, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::read_to_string(&real)
+            .unwrap()
+            .starts_with("ll = ls -la\n")
+    );
+
+    // A lone file is replaced by rename (a new inode), keeping its mode.
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::write(&real, "ll = ls\n").unwrap();
+    let before = fs::metadata(&real).unwrap().ino();
+    assert!(save(&real, &aliases, &[]).status.success());
+    let meta = fs::metadata(&real).unwrap();
+    assert_ne!(meta.ino(), before);
+    assert_eq!(meta.permissions().mode() & 0o777, 0o640);
+
+    // With a second hard link it is rewritten in place, so both names see the
+    // new contents and the inode is the same.
+    let hard = dir.join("hard.txt");
+    fs::hard_link(&real, &hard).unwrap();
+    fs::write(&real, "ll = ls\n").unwrap();
+    let before = fs::metadata(&real).unwrap().ino();
+    assert!(save(&real, &aliases, &[]).status.success());
+    assert_eq!(fs::metadata(&real).unwrap().ino(), before);
+    assert!(
+        fs::read_to_string(&hard)
+            .unwrap()
+            .starts_with("ll = ls -la\n")
+    );
+
+    // No temporary file or backup is left behind.
+    assert_eq!(
+        names_in(&dir),
+        ["aliases", "hard.txt", "link.txt", "real.txt"]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn save_refuses_aliases_that_disagree() {
+    let (dir, aliases) = save_fixture("save-conflict");
+    // A copy under another file name that holds a different `ll`.
+    let out = tool(&args!["new", "ll", "ls -1", "-o", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    fs::rename(dir.join("ll"), aliases.join("ll-copy")).unwrap();
+    let file = dir.join("aliases.txt");
+    let out = save(&file, &aliases, &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("alias `ll` differs between"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!file.exists());
     let _ = fs::remove_dir_all(&dir);
 }
 

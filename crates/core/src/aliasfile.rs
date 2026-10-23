@@ -138,9 +138,153 @@ pub fn parse_lenient(src: &str) -> (Vec<Entry<'_>>, Vec<FileError>) {
     (entries, errors)
 }
 
+/// The result of [`merge`]: the new file text and what changed in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Merged {
+    /// The whole file, updated.
+    pub text: String,
+    /// Aliases whose template was replaced, with their 1-based line, in file
+    /// order.
+    pub updated: Vec<(String, usize)>,
+    /// Aliases appended at the end, in the order given.
+    pub added: Vec<String>,
+    /// Aliases the file already had exactly.
+    pub unchanged: usize,
+}
+
+/// Bring an alias file's text up to date with a set of aliases, changing as
+/// little of it as possible.
+///
+/// An alias the file already defines keeps its line. If its template
+/// differs, only the template is replaced: everything up to the `=` and the
+/// blanks after it stays, so hand alignment survives. Aliases the file
+/// doesn't define are appended at the end, one `name = template` line each,
+/// in the order given. Every other byte, comments, blank lines, definitions
+/// of aliases not given and line endings included, is copied unchanged.
+///
+/// Templates are compared and written trimmed, as the file stores them.
+/// `aliases` must have unique, valid names and single-line, non-blank
+/// templates; the caller checks this.
+///
+/// # Errors
+///
+/// Every problem [`parse`] finds in `src`. The file must parse cleanly, so
+/// that the result defines exactly what the original did apart from the
+/// merged aliases.
+pub fn merge(src: &str, aliases: &[(&str, &str)]) -> Result<Merged, Vec<FileError>> {
+    let entries = parse(src)?;
+    // 1-based line -> the new template for it, for lines that change.
+    let mut replacements: HashMap<usize, &str> = HashMap::new();
+    let mut updated = Vec::new();
+    let mut added = Vec::new();
+    let mut unchanged = 0;
+    let by_name: HashMap<&str, &Entry> = entries.iter().map(|e| (e.name, e)).collect();
+    for &(name, template) in aliases {
+        let template = template.trim();
+        match by_name.get(name) {
+            Some(entry) if entry.template == template => unchanged += 1,
+            Some(entry) => {
+                replacements.insert(entry.line, template);
+                updated.push((name.to_owned(), entry.line));
+            }
+            None => added.push(name.to_owned()),
+        }
+    }
+    updated.sort_by_key(|(_, line)| *line);
+
+    // Rebuild line by line. `split_inclusive` keeps each line's ending, and
+    // numbers lines the same way `str::lines` does in `parse`.
+    let mut text = String::with_capacity(src.len());
+    for (index, raw) in src.split_inclusive('\n').enumerate() {
+        let Some(template) = replacements.get(&(index + 1)) else {
+            text.push_str(raw);
+            continue;
+        };
+        // Keep the line ending, `\r\n` or `\n` (or none, on a last line).
+        let body = raw.trim_end_matches(['\n', '\r']);
+        let ending = &raw[body.len()..];
+        // A replaced line is a definition, so it has an `=`. Keep it and the
+        // blanks after it, then the new template.
+        let eq = body.find('=').expect("a definition line has `=`");
+        let after = &body[eq + 1..];
+        let blanks = after.len() - after.trim_start().len();
+        text.push_str(&body[..eq + 1 + blanks]);
+        text.push_str(template);
+        text.push_str(ending);
+    }
+    // Appended lines use the file's own line ending, after a final newline
+    // if the last line lacks one.
+    if !added.is_empty() {
+        let newline = if src.contains("\r\n") { "\r\n" } else { "\n" };
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push_str(newline);
+        }
+        for &(name, template) in aliases {
+            if !by_name.contains_key(name) {
+                text.push_str(&format!("{name} = {}{newline}", template.trim()));
+            }
+        }
+    }
+    Ok(Merged {
+        text,
+        updated,
+        added,
+        unchanged,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_replaces_only_the_template() {
+        let src = "# mine\nll    = ls -la\n\nenc=ffmpeg {1}\r\nold = keep me\n";
+        let merged = merge(src, &[("enc", " ffmpeg -crf=20 {1} "), ("ll", "ls -lah")]).unwrap();
+        // Alignment, the missing blank after `=`, CRLF, comments, blank lines
+        // and an entry not given are all kept.
+        assert_eq!(
+            merged.text,
+            "# mine\nll    = ls -lah\n\nenc=ffmpeg -crf=20 {1}\r\nold = keep me\n"
+        );
+        assert_eq!(
+            merged.updated,
+            vec![("ll".to_owned(), 2), ("enc".to_owned(), 4)]
+        );
+        assert!(merged.added.is_empty());
+    }
+
+    #[test]
+    fn merge_appends_new_aliases_and_keeps_identical_ones() {
+        // No final newline: one is added before the appended lines.
+        let src = "ll = ls -la";
+        let merged = merge(
+            src,
+            &[("ll", "  ls -la "), ("b", "echo b"), ("a", "echo a")],
+        )
+        .unwrap();
+        assert_eq!(merged.text, "ll = ls -la\nb = echo b\na = echo a\n");
+        assert_eq!(merged.added, vec!["b".to_owned(), "a".to_owned()]);
+        assert_eq!(merged.unchanged, 1);
+        // An empty file just gets the lines; CRLF files get CRLF lines.
+        assert_eq!(merge("", &[("a", "x")]).unwrap().text, "a = x\n");
+        assert_eq!(
+            merge("# c\r\n", &[("a", "x")]).unwrap().text,
+            "# c\r\na = x\r\n"
+        );
+        // Nothing to do leaves the text identical.
+        assert_eq!(
+            merge("ll = ls -la\n", &[("ll", "ls -la")]).unwrap().text,
+            "ll = ls -la\n"
+        );
+    }
+
+    #[test]
+    fn merge_refuses_files_that_do_not_parse() {
+        let src = "a = x\na = y\n";
+        let errors = merge(src, &[("a", "z")]).unwrap_err();
+        assert_eq!(errors[0].line, 2);
+    }
 
     #[test]
     fn parses_entries_and_skips_comments() {

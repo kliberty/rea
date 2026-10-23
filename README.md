@@ -120,8 +120,17 @@ The aliases themselves are the record. `rea list DIR` prints the aliases
 in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
 by `patch aliases.txt` recreates them exactly.
 
+`rea save FILE [DIR]` writes them back into an existing alias file instead,
+the reverse of `patch`. An alias the file already defines keeps its line,
+with only the template replaced if it changed, and new aliases are appended.
+Comments, blank lines, order and entries with no alias in DIR stay as they
+are, and `--dry-run` shows what would change. A symlinked file is updated
+through the link, and a hard-linked one is rewritten in place (with a backup
+beside it until the write is done), so the links survive.
+
 ```
 rea list [DIR]                       # aliases in DIR, as an alias file
+rea save FILE [DIR]                  # update an alias file from DIR
 rea inspect ALIAS...                 # definition stored in alias executables
 rea explain ALIAS 'a b.flif'         # what an alias would run, quoted
 rea explain -t TEMPLATE ARGS         # the same for a template
