@@ -114,7 +114,12 @@ fn rewrite_in_place(path: &Path, dir: &Path, name: &str, data: &[u8]) -> Result<
     // means no write.
     let (backup, mut copy) = create_unique(dir, &format!(".{name}.rea-backup-"), 0o600)
         .map_err(|err| format!("cannot create a backup in {}: {err}", dir.display()))?;
-    if let Err(err) = copy.write_all(&original).and_then(|()| copy.sync_all()) {
+    if let Err(err) = copy
+        .write_all(&original)
+        .and_then(|()| copy.sync_all())
+        // The backup's name must survive a crash too, not just its contents.
+        .and_then(|()| File::open(dir)?.sync_all())
+    {
         let _ = fs::remove_file(&backup);
         return Err(format!(
             "cannot write the backup {}: {err}",
