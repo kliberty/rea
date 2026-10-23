@@ -123,7 +123,8 @@ by `patch aliases.txt` recreates them exactly.
 `rea save FILE [DIR]` writes them back into an existing alias file instead,
 the reverse of `patch`. An alias the file already defines keeps its line,
 with only the template replaced if it changed, and new aliases are appended
-under a `# added by rea save` comment, ready to be moved where they belong
+in name order under a `# added by rea save` comment, ready to be moved where
+they belong
 (a later `save` adds to that block while it is still at the end). Comments,
 blank lines, order and entries with no alias in DIR stay as they are, and
 `--dry-run` shows what would change. A symlinked file is updated

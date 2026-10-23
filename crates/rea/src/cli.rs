@@ -165,10 +165,10 @@ enum Cmd {
     ///
     /// The counterpart of `patch`. An alias the file already defines keeps
     /// its line, with only the template replaced if it changed; aliases the
-    /// file lacks are appended under a `# added by rea save` comment.
-    /// Comments, blank lines, order, and entries with no alias in DIR are
-    /// kept. A file that doesn't parse is refused, and an unchanged one is
-    /// not rewritten.
+    /// file lacks are appended, in name order, under a `# added by rea save`
+    /// comment. Comments, blank lines, order, and entries with no alias in
+    /// DIR are kept. A file that doesn't parse is refused, and an unchanged
+    /// one is not rewritten.
     ///
     /// The file is replaced by renaming a new one over it, or, if it has
     /// other hard links or an owner a new file wouldn't get, rewritten in
