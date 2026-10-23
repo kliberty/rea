@@ -115,12 +115,16 @@ by `patch aliases.txt` recreates them exactly.
 
 ```
 rea list [DIR]                       # aliases in DIR, as an alias file
-rea inspect FILE...                  # definition stored in alias executables
-rea explain FILE 'a b.flif'          # what an alias would run, quoted
+rea inspect ALIAS...                 # definition stored in alias executables
+rea explain ALIAS 'a b.flif'         # what an alias would run, quoted
 rea explain -t TEMPLATE ARGS         # the same for a template
 rea eval TEMPLATE ARGS               # run a template directly, to try it out
 rea eval - ARGS                      # the same, with the template read from stdin
 ```
+
+An ALIAS is a path to the executable, or a bare name, which is looked up on
+`$PATH` like a command (then in the default alias directory), so `rea explain
+flif270` reads the same file that running `flif270` would.
 
 `explain` shows the commands even when a file check would stop them, and
 lists those checks after them, so debugging an alias never means changing

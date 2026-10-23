@@ -175,9 +175,12 @@ enum Cmd {
         dir: Option<PathBuf>,
     },
     /// Print the definition stored in alias executables.
+    ///
+    /// A bare name (no `/`) is looked up on $PATH like a command, then in the
+    /// default alias directory.
     Inspect {
-        /// Alias executables.
-        #[arg(required = true, value_hint = ValueHint::FilePath)]
+        /// Alias executables: paths, or bare names to look up.
+        #[arg(required = true, value_name = "ALIAS", value_hint = ValueHint::FilePath)]
         files: Vec<PathBuf>,
     },
     /// Print the commands an alias would run, without running them.
@@ -185,11 +188,15 @@ enum Cmd {
     /// File checks that would fail and unset environment variables are listed
     /// after the commands. The exit status is the alias's own: 2 for any of
     /// those, a wrong argument count or an invalid template.
+    ///
+    /// A bare name (no `/`) is looked up on $PATH like a command, then in the
+    /// default alias directory.
     Explain {
         /// Treat TARGET as template source rather than an alias executable.
         #[arg(short = 't', long = "template")]
         is_template: bool,
-        /// Alias executable (or template source, with -t).
+        /// Alias executable: a path, or a bare name to look up (template
+        /// source, with -t).
         #[arg(value_hint = ValueHint::FilePath)]
         target: String,
         /// Arguments to expand with.
@@ -741,12 +748,68 @@ fn list(dir: Option<&Path>) -> i32 {
 fn inspect(files: &[PathBuf]) -> i32 {
     let mut failures = 0;
     for file in files {
-        match read_definition(file) {
+        match find_alias(file).and_then(|path| read_definition(&path)) {
             Ok((name, template)) => println!("{name} = {template}"),
             Err(err) => failures += fail(&err),
         }
     }
     if failures > 0 { 1 } else { 0 }
+}
+
+/// The file to read for an alias given on the command line, found the way
+/// a shell finds a command.
+///
+/// A target containing `/` is a path, used as given. A bare name is looked
+/// up in each `$PATH` directory in order, and the first executable file
+/// wins, so `explain NAME` reads the file that running NAME would run, even
+/// when that file isn't an alias. As in sh, an empty `$PATH` entry means the
+/// current directory. If no entry has the name, the default alias directory
+/// is tried last, for aliases made where `$PATH` doesn't look.
+fn find_alias(target: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    // An empty target is left to fail as a path, with the read error.
+    let bytes = target.as_os_str().as_bytes();
+    if bytes.is_empty() || bytes.contains(&b'/') {
+        return Ok(target.to_path_buf());
+    }
+    // Executable regular files only, as the shell's search; metadata follows
+    // symlinks, so a symlinked alias counts.
+    let is_command = |path: &Path| {
+        fs::metadata(path)
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    // Unset is no directories; set but empty is one empty entry, as in sh.
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|var| {
+            std::env::split_paths(&var)
+                .map(|dir| {
+                    if dir.as_os_str().is_empty() {
+                        PathBuf::from(".")
+                    } else {
+                        dir
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // The default alias directory comes last, so it never shadows `$PATH`.
+    // Failing to locate it only loses the fallback.
+    let fallback = own_dir().ok();
+    dirs.extend(fallback.clone());
+    if let Some(found) = dirs
+        .iter()
+        .map(|dir| dir.join(target))
+        .find(|path| is_command(path))
+    {
+        return Ok(found);
+    }
+    let name = target.display();
+    Err(match fallback {
+        Some(dir) => format!("{name}: not found on PATH or in {}", dir.display()),
+        None => format!("{name}: not found on PATH"),
+    })
 }
 
 /// Read the definition stored in an alias executable, as `(name, template)`,
@@ -801,7 +864,7 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     let (name, source) = if is_template {
         (SELF_NAME.to_owned(), target.to_owned())
     } else {
-        match read_definition(Path::new(target)) {
+        match find_alias(Path::new(target)).and_then(|path| read_definition(&path)) {
             Ok(definition) => definition,
             Err(err) => return fail(&err),
         }
