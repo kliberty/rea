@@ -547,6 +547,81 @@ fn explain_reads_an_alias_executable() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Run `rea` with arguments and `$PATH` set to `path`.
+fn tool_with_path(args: &[&OsStr], path: &OsStr) -> Output {
+    bin()
+        .args(args)
+        .env("PATH", path)
+        .output()
+        .expect("binary runs")
+}
+
+#[test]
+fn bare_names_are_looked_up_on_path() {
+    let dir = scratch("bare-names");
+    let aliases = dir.join("aliases");
+    let first = dir.join("first");
+    fs::create_dir_all(&first).unwrap();
+    let new = tool(&args![
+        "new",
+        "mv2",
+        "mv {1} {1}.bak",
+        "-o",
+        aliases.to_str().unwrap()
+    ]);
+    assert!(new.status.success(), "{}", stderr(&new));
+    let path = std::env::join_paths([&first, &aliases]).unwrap();
+
+    // Found in a later $PATH directory, by `explain` and `inspect` alike.
+    let out = tool_with_path(&args!["explain", "mv2", "a b"], &path);
+    assert!(
+        stdout(&out).starts_with("   mv 'a b' 'a b.bak'\n"),
+        "{}",
+        stderr(&out)
+    );
+    let out = tool_with_path(&args!["inspect", "mv2"], &path);
+    assert_eq!(stdout(&out), "mv2 = mv {1} {1}.bak\n", "{}", stderr(&out));
+
+    // The first executable on $PATH wins, as when running the name, even if
+    // it isn't an alias; the error says which file was read.
+    let shadow = first.join("mv2");
+    fs::write(&shadow, "#!/bin/sh\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&shadow, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = tool_with_path(&args!["explain", "mv2"], &path);
+    assert_eq!(out.status.code(), Some(1));
+    let expected = format!("{}: not a rea alias", shadow.display());
+    assert!(stderr(&out).contains(&expected), "{}", stderr(&out));
+
+    // A file that isn't executable is skipped, as the shell skips it.
+    fs::set_permissions(&shadow, fs::Permissions::from_mode(0o644)).unwrap();
+    let out = tool_with_path(&args!["inspect", "mv2"], &path);
+    assert_eq!(stdout(&out), "mv2 = mv {1} {1}.bak\n", "{}", stderr(&out));
+
+    // A bare name in the current directory isn't used unless $PATH says so,
+    // but a path to it is.
+    let out = bin()
+        .args(["inspect", "mv2"])
+        .env("PATH", &first)
+        .current_dir(&aliases)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("mv2: not found on PATH or in "),
+        "{}",
+        stderr(&out)
+    );
+    let out = bin()
+        .args(["inspect", "./mv2"])
+        .env("PATH", &first)
+        .current_dir(&aliases)
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&out), "mv2 = mv {1} {1}.bak\n", "{}", stderr(&out));
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // `eval -`: the template read from stdin.
 // ---------------------------------------------------------------------------
