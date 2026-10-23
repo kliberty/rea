@@ -23,44 +23,6 @@ Ideas that are designed or agreed on but not built yet. Newest first.
 - `hot-order` is unmerged and still uses the old names; rename it if it
   should ever land.
 
-## Bug: inherited SIGCHLD ignore breaks every waited-for step
-
-If rea starts with SIGCHLD set to ignored (some parents do this, and it
-survives exec), the kernel reaps children automatically and the supervisor's
-`wait` fails with ECHILD. run.rs maps that to exit 1, with a comment saying it
-can't happen. Every step that is waited on then counts as failed, so control
-flow goes wrong too. Reproduce with bash, since dash doesn't pass the ignore on:
-
-    bash -c "trap '' CHLD; exec rea eval 'true && echo ok'"   # prints nothing, exit 1
-    bash -c "trap '' CHLD; exec rea eval 'true | true'"       # exit 1
-
-A single command is unaffected (it is exec'd, not waited for). The C++ runtime
-resets SIGCHLD to the default before spawning; the supervisor path should do
-the same, before forking, and fix the comment. Worth a test that runs an alias
-under an inherited ignore.
-
-## Bug: the arity search is quadratic in the largest argument number
-
-`compute_arity` tries every count up to 2K+1 and lays the template out at
-each. `rea new t 'echo {1..10000} {10000}'` takes 0.57 s with about 1,600
-minor faults on a glibc build, but 2 s with about 985,000 faults on the static
-musl build: musl's malloc returns freed memory to the kernel eagerly, so each
-of the 20,000 layouts allocates fresh pages and faults on every one. Fixes,
-which combine:
-
-- Refuse references above some cap (below).
-- Reuse the layout's buffers across counts instead of allocating per count;
-  that alone removes the fault storm on musl.
-- A different allocator for the tool (e.g. mimalloc) is the usual musl
-  remedy, but adds a dependency; probably unnecessary after the above. The
-  stub has its own arena and isn't affected.
-
-Sizing the cap: argv and the environment together may use a quarter
-of the stack limit (`getconf ARG_MAX`: 2 MiB with the default 8 MiB stack), and
-each argument costs its length + 1 + an 8-byte pointer, so even empty arguments
-top out around 230,000. A cap far below that (hundreds or a few thousand) keeps
-creation fast and loses nothing real.
-
 ## Remove the implicit {@}
 
 Decided: a single command with no references no longer gets `{@}` appended.
