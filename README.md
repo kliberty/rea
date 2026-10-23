@@ -1,5 +1,71 @@
 # rea
 
+
+
+# Examples and stuff
+
+Yes, the flags
+- D - directory exists
+- E - anything exists
+- F - not a directory and exists
+- N - does not exist
+
+modifiers
+- . no extension
+- / basename
+- /. basename without extension
+- // parent directory
+
+`{1:F.}.jpg` is "make sure arg 1 exists as a file, strip the extension and add .jpg"
+
+`{1:F.}.jpg{:N}` would do the "file exists" check like above, and do a separate "does not exist" check after appending ".jpg".
+
+If it's multiple arguments (slice or `{@}`/`{@+}`) then the word expansion and checks happen for each argument. If it's empty (allowed only with `{@}`) then the whole word is deleted.
+
+Arity is checked when the alias is created.
+
+```
+> rea new bad-mv 'mv {1} {3}'
+rea: alias `bad-mv`: `{3}` is used but `{2}` is not; every argument must be used, so number them without gaps (or cover the gap with a slice)
+    mv {1} {3}
+           ^
+
+> rea new bad-checks 'mv {1:F} {1:N}'
+rea: alias `bad-checks`: `{1:N}` contradicts `{1:F}`: a path can't both exist and not exist
+    mv {1:F} {1:N}
+             ^
+> rea new bad-pattern 'echo {..4} {-2}'
+rea: alias `bad-pattern`: no number of arguments works with this template: {-2} is used but {-1} is not, and no slice covers that argument
+    echo {..4} {-2}
+```
+
+Checks are run before launching and child processes.
+
+```
+> mvt Cargo.toml Cargo.lock 
+mvt: {-1:D} needs an existing directory, but 'Cargo.lock' is a file
+    mvt = mv -t {-1:D} -- {..-1:E}
+
+> mvt Cargo.toml Cargo.lock not-a-dir
+mvt: {-1:D} needs an existing directory, but 'not-a-dir' does not exist
+    mvt = mv -t {-1:D} -- {..-1:E}
+```
+
+And you can also try before you run
+
+```
+> rea explain mvt Cargo.toml Cargo.lock not-a-dir
+   mv -t not-a-dir -- Cargo.toml Cargo.lock
+(single command: runs via exec, no supervisor process)
+rea: would not run: {-1:D} needs an existing directory, but 'not-a-dir' does not exist
+```
+
+"creation" uses ELF stamping, so they're standalone binaries but don't need a compiler.
+
+
+
+
+
 Command aliases with numbered arguments and real pipelines, and no shell
 involved. The successor to `alias_maker.py` (2012).
 
