@@ -24,6 +24,7 @@ test = false
 rea-core.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
+terminal_size = "0.4.4"
 
 [dev-dependencies]
 # The tests start the binary with signal dispositions set up in the child.

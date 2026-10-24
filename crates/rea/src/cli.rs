@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use clap::{CommandFactory, Parser, Subcommand, ValueHint};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
 use rea_core::{aliasfile, run_alias, slot, template};
@@ -268,10 +268,28 @@ enum Cmd {
     },
 }
 
+fn parse_cli() -> Cli {
+    let term_width = terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .unwrap_or(200);
+
+    let width = if term_width < 80 {
+        term_width
+    } else if term_width > 200 {
+        120
+    } else {
+        (term_width * 90 / 100).clamp(80, 200)
+    };
+
+    let matches = Cli::command().term_width(width).get_matches();
+
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+}
+
 /// Entry point. Never returns: exits with the subcommand's status.
 pub fn main() -> ! {
     // `eval` replaces the process or exits itself; the rest return a status.
-    let status = match Cli::parse().command {
+    let status = match parse_cli().command {
         Cmd::New {
             name,
             template,

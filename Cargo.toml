@@ -14,7 +14,7 @@ repository = "https://github.com/kliberty/rea"
 # The version must match [workspace.package] above: crates.io needs one, and
 # cargo drops the path when packaging. Bump both together.
 rea-core = { path = "crates/core", version = "0.7.3" }
-clap = { version = "4.6.7", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
 clap_complete = "4.6.11"
 libc = "0.2.190"
 
