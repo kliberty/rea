@@ -49,7 +49,7 @@ endif
 REA := $(BINDIR)/rea
 
 # None of these name files, so make must always run them.
-.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall completions aliases aliases-prune check-aliases clean tag
+.PHONY: help build build-static test test-many test-static test-full lint install install-static uninstall completions aliases aliases-prune check-aliases clean tag dist
 
 # Default target: show what's available, since there is no single obvious
 # action (unlike a typical `make` that just builds).
@@ -70,6 +70,7 @@ help:
 	@echo "make check-aliases   validate $(ALIASES) without writing anything"
 	@echo "make clean           remove target/"
 	@echo "make tag				create a new git tag from the version number in Cargo.toml"
+	@echo "make dist           release archive of the static build, from a clean, tagged checkout"
 	@echo
 	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)  COMPLETION_SHELL=$(COMPLETION_SHELL)"
 	@echo "  PIE=no builds non-position-independent binaries: faster alias"
@@ -156,6 +157,7 @@ check-aliases:
 
 clean:
 	cargo clean
+	rm -rf $(DIST)
 
 
 .PHONY: bump-minor bump-patch
@@ -177,3 +179,37 @@ bump-minor bump-patch: bump-%: | cargo-version
 
 tag: cargo-version
 	git tag v$$(./cargo-version)
+
+# Release archives, for attaching to a GitHub release: one per target, holding
+# rea, rea-stub, the README and the licenses, plus SHA256SUMS for all of them.
+DIST := dist
+# Recursive, so the version is only read when dist runs.
+DIST_VERSION = v$(shell $(cargo-ver-cmd))
+DIST_NAME = rea-$(DIST_VERSION)-$(STATIC_TARGET)
+DIST_RELEASE := target/$(STATIC_TARGET)/release
+
+# Refuses to package anything but the tagged commit, unmodified, so an archive
+# always matches its tag; a `git worktree` of the tag is a clean place to run
+# it. The build gets two path remappings, so the binaries' panic locations name
+# `~/...` and `./...` instead of this machine's home and checkout. They go in
+# through the environment, where the PIE=no flags in build add to them.
+#
+# The archive is reproducible: sorted entries, the commit's date as every
+# file's time, no local owner, and gzip without its own timestamp. Packing the
+# same build twice gives the same bytes. Building for another architecture:
+# `make dist STATIC_TARGET=aarch64-unknown-linux-musl` on that machine.
+dist:
+	@git diff --quiet HEAD || { echo "dist: the checkout has uncommitted changes" >&2; exit 1; }
+	@test "$$(git describe --tags --exact-match HEAD 2>/dev/null)" = "$(DIST_VERSION)" || \
+		{ echo "dist: HEAD is not tagged $(DIST_VERSION)" >&2; exit 1; }
+	RUSTFLAGS="$(RUSTFLAGS) --remap-path-prefix=$(HOME)=~ --remap-path-prefix=$(CURDIR)=." \
+		$(MAKE) build-static
+	rm -rf $(DIST)/$(DIST_NAME) $(DIST)/$(DIST_NAME).tar.gz
+	mkdir -p $(DIST)/$(DIST_NAME)
+	cp $(DIST_RELEASE)/rea $(DIST_RELEASE)/rea-stub README.md LICENSE-MIT LICENSE-APACHE \
+		$(DIST)/$(DIST_NAME)/
+	tar -C $(DIST) --sort=name --mtime=@$$(git log -1 --format=%ct) \
+		--owner=0 --group=0 --numeric-owner -cf - $(DIST_NAME) | gzip -n -9 > $(DIST)/$(DIST_NAME).tar.gz
+	rm -rf $(DIST)/$(DIST_NAME)
+	cd $(DIST) && sha256sum *.tar.gz > SHA256SUMS
+	@echo "made $(DIST)/$(DIST_NAME).tar.gz"
