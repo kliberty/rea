@@ -7,6 +7,8 @@ members = ["crates/core", "crates/rea"]
 [workspace.package]
 version = "0.7.3"
 edition = "2024"
+# Edition 2024 and clap 4.6 both need 1.85, so nothing lower is possible.
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kliberty/rea"
 

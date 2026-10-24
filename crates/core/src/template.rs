@@ -316,15 +316,15 @@ impl Format {
         reference: impl Fn() -> String,
         findings: &mut Findings,
     ) -> OsString {
-        if let Some(check) = self.check
-            && let Err(found) = check.run(value)
-        {
-            findings.record(ExpandError::CheckFailed {
-                reference: reference(),
-                wants: check.wants(),
-                value: value.to_os_string(),
-                found,
-            });
+        if let Some(check) = self.check {
+            if let Err(found) = check.run(value) {
+                findings.record(ExpandError::CheckFailed {
+                    reference: reference(),
+                    wants: check.wants(),
+                    value: value.to_os_string(),
+                    found,
+                });
+            }
         }
         self.modifier
             .map_or_else(|| value.to_os_string(), |m| m.apply(value))
@@ -1777,8 +1777,8 @@ fn layout_into(shape: &Shape, count: usize, scratch: &mut Scratch) -> Result<(),
     // happen: numbering has no gaps, so {N} take a run from the front, {-N}
     // a run from the back, and {@} is the one run between them, which
     // `{1} --opt val {@} -o {-1}` needs and can't express any other way.
-    if !shape.slices.is_empty()
-        && let (Some(&first), Some(&last)) = (rest.first(), rest.last())
+    // One pattern instead of `&& let`, which needs Rust 1.88.
+    if let (false, Some(&first), Some(&last)) = (shape.slices.is_empty(), rest.first(), rest.last())
     {
         // Name the reference covering a position: as written, so the message
         // holds for every count.
@@ -2305,15 +2305,15 @@ fn expand_command(
 ///
 /// The entry is returned unchanged whether or not the check passed.
 fn check_word(word: &Word, entry: OsString, findings: &mut Findings) -> OsString {
-    if let Some(check) = word.check
-        && let Err(found) = check.run(&entry)
-    {
-        findings.record(ExpandError::CheckFailed {
-            reference: format!("the word {}", word.source),
-            wants: check.wants(),
-            value: entry.clone(),
-            found,
-        });
+    if let Some(check) = word.check {
+        if let Err(found) = check.run(&entry) {
+            findings.record(ExpandError::CheckFailed {
+                reference: format!("the word {}", word.source),
+                wants: check.wants(),
+                value: entry.clone(),
+                found,
+            });
+        }
     }
     entry
 }
