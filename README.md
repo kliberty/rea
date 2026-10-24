@@ -1,20 +1,39 @@
 # rea
 
-
+Safe shell aliases and pipelines as standalone executables.
 
 # Examples and stuff
 
-Yes, the flags
-- D - directory exists
-- E - anything exists
-- F - not a directory and exists
-- N - does not exist
+### Argument Check Flags
 
-modifiers
-- . no extension
-- / basename
-- /. basename without extension
-- // parent directory
+| Flag | Meaning                    |
+|------|----------------------------|
+| D    | Directory exists           |
+| F    | Not a directory and exists |
+| E    | Exists                     |
+| N    | Does not exist             |
+
+### Argument Modifiers
+
+| Modifier | Meaning                    |
+|----------|----------------------------|
+| .        | without extension          |
+| /        | basename                   |
+| /.       | basename without extension |
+| //       | Parent directory           |
+
+#### Examples
+
+```
+for i in photo.jpg ../dir1/dir2/files.tar.gz . .. ; do rea eval 'printf "%s\t%s\n" \{1\} {1} . {1:.} / {1:/} /. {1:/.} // {1://}' "$i"; done
+```
+
+Convert to relative path and strip trailing `/`
+```
+> rea eval 'printf "%s\t%s\n" {@} {@+://}/{@+:/}' with-slash/ no-slash
+with-slash/     no-slash
+./with-slash    ./no-slash
+```
 
 `{1:F.}.jpg` is "make sure arg 1 exists as a file, strip the extension and add .jpg"
 
@@ -29,14 +48,18 @@ Arity is checked when the alias is created.
 rea: alias `bad-mv`: `{3}` is used but `{2}` is not; every argument must be used, so number them without gaps (or cover the gap with a slice)
     mv {1} {3}
            ^
+> rea new bad-pattern 'echo {..4} {-2}'
+rea: alias `bad-pattern`: no number of arguments works with this template: {-2} is used but {-1} is not, and no slice covers that argument
+    echo {..4} {-2}
+```
 
+Contradictory flags are checked.
+
+```
 > rea new bad-checks 'mv {1:F} {1:N}'
 rea: alias `bad-checks`: `{1:N}` contradicts `{1:F}`: a path can't both exist and not exist
     mv {1:F} {1:N}
              ^
-> rea new bad-pattern 'echo {..4} {-2}'
-rea: alias `bad-pattern`: no number of arguments works with this template: {-2} is used but {-1} is not, and no slice covers that argument
-    echo {..4} {-2}
 ```
 
 Checks are run before launching and child processes.
@@ -46,12 +69,21 @@ Checks are run before launching and child processes.
 mvt: {-1:D} needs an existing directory, but 'Cargo.lock' is a file
     mvt = mv -t {-1:D} -- {..-1:E}
 
-> mvt Cargo.toml Cargo.lock not-a-dir
+> mvt Cargo.toml Cargo.lock "not a real file" not-a-dir
 mvt: {-1:D} needs an existing directory, but 'not-a-dir' does not exist
     mvt = mv -t {-1:D} -- {..-1:E}
 ```
 
-And you can also try before you run
+`rea explain` can be used to check all arguments at once without running an alias.
+```
+> rea explain mvt Cargo.toml Cargo.lock "not a real file" not-a-dir
+   mv -t not-a-dir -- Cargo.toml Cargo.lock 'not a real file'
+(single command: runs via exec, no supervisor process)
+rea: would not run: {-1:D} needs an existing directory, but 'not-a-dir' does not exist
+rea: would not run: {..-1:E} needs an existing path, but 'not a real file' does not exist
+```
+
+And you can also try before you run an existing alias
 
 ```
 > rea explain mvt Cargo.toml Cargo.lock not-a-dir
@@ -60,10 +92,18 @@ And you can also try before you run
 rea: would not run: {-1:D} needs an existing directory, but 'not-a-dir' does not exist
 ```
 
-"creation" uses ELF stamping, so they're standalone binaries but don't need a compiler.
+or try a template
+
+```
+> rea explain -t 'echo {$JRE_HOME:D//}'
+   echo /usr/lib64/jvm
+(single command: runs via exec, no supervisor process)
+(from the environment: JRE_HOME=/usr/lib64/jvm/java-25-openjdk-25)
+```
 
 
 
+# Start
 
 
 Command aliases with numbered arguments and real pipelines, and no shell
@@ -229,25 +269,30 @@ up stdin, so the template's own commands then see stdin at end of file.
 
 `rea --help` prints this too.
 
-| Syntax | Meaning |
-|---|---|
-| `{1}`, `{2}`, ... | arguments counted from the front; can be glued to text: `{1}.mkv` |
-| `{-1}`, `{-2}`, ... | arguments counted from the back: `{-1}` is the last |
-| `{@}` | every argument nothing else uses (no `{N}`, `{-N}` or slice), zero or more |
-| `{@+}` | the same, but at least one is required |
-| `{A..B}` | a slice: from argument A up to but **not including** B, counted like `{N}` / `{-N}`; `{2..}` is the 2nd onward, `{..-1}` all but the last |
-| `{0}` | the alias name |
-| `{$NAME}` | environment variable `NAME`, when the alias runs: `rsync -ahP {@+} {$BACKUP_DIR:D}` |
-| `{1:/}`, `{1://}` | basename, parent directory (`dir/photo.jpg` gives `photo.jpg`, `dir`) |
-| `{1:.}`, `{1:/.}` | without the extension, basename without it (`dir/photo`, `photo`) |
-| `{1:F}`, `{1:D}` | must be an existing file (anything but a directory) / directory |
-| `{1:E}`, `{1:N}` | must exist / must not exist yet |
-| `{:F}`, `{:D}`, `{:E}`, `{:N}` | at the very end of a word, the same checks on the whole word: `{1}.jpg{:N}` |
-| `a \| b` | pipe |
-| `a && b`, `a \|\| b`, `a ; b` | sequencing, as in sh |
-| `'...'` | fully literal |
-| `"..."` | literal except references and the escapes `\" \\ \{ \} \$ \`` |
-| `\x` | literal `x` |
+| Syntax                         | Meaning                                                                                       |
+|--------------------------------|-----------------------------------------------------------------------------------------------|
+| `{0}`                          | the alias name when it was created                                                            |
+| `{1}`, `{2}`, ...              | arguments counted from the front                                                              |
+| `{-1}`, `{-2}`, ...            | arguments counted from the back: `{-1}` is the last                                           |
+| `{1}.text`                     | attached text is expanded with the argument                                                   |
+| `{@}`                          | every argument nothing else uses (no `{N}`, `{-N}` or slice), zero or more                    |
+| `{@+}`                         | the same, but at least one is required                                                        |
+| `{A..B}`                       | a slice, inclusive beginning and exclusive end. Requires `A < B`. A and/or B may be negative. |
+| `{A..}`                        | a slice, up through and including the last element                                            |
+| `{..B}`                        | a slice, shorthand for `{1..B}`                                                               |
+| `{@}.text`, `{A..B}.text`      | attached text is copied and expanded expanded per argument.                                   |
+| `{$NAME}`                      | environment variable `NAME`, evaluated when the aliases starts                                |
+| `{1:/}`, `{1://}`              | basename, parent directory (`dir/photo.jpg` gives `photo.jpg`, `dir`)                         |
+| `{1:.}`, `{1:/.}`              | without the extension, basename without it (`dir/photo`, `photo`)                             |
+| `{1:F}`, `{1:D}`               | must be an existing file (anything but a directory) / directory                               |
+| `{1:E}`, `{1:N}`               | must exist / must not exist yet                                                               |
+| `{@:N}`, `{A..B:N}`            | checks are performed for each argument                                                        |
+| `{:F}`, `{:D}`, `{:E}`, `{:N}` | at the very end of a word, the same checks on the whole word: `{1}.jpg{:N}`                   |
+| `a \| b`                       | pipe. A pipeline fails if any stage dies except for by SIGPIPE. `yes \| head -n 1` exits 0    |
+| `a && b`, `a \|\| b`, `a ; b`  | sequencing, as in sh                                                                          |
+| `'...'`                        | fully literal                                                                                 |
+| `"..."`                        | literal except references and the escapes `\" \| \\ \{ \} \$ \``                              |
+| `\x`                           | literal `x`                                                                                   |
 
 - A one-argument reference is substituted straight into argv, so a filename
   with spaces is always one word. No quoting is ever needed around `{1}`.
