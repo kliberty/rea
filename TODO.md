@@ -12,8 +12,6 @@ Ideas that are designed or agreed on but not built yet. Newest first.
   - categories = ["command-line-utilities"]
 - README: mention the zsh `fpath` line needed for `make completions`
   (`~/.local/share/zsh/site-functions` isn't on zsh's search path by default).
-- Set `rust-version` in Cargo.toml (edition 2024 needs at least 1.85; the
-  real minimum is untested).
 - bench/perfdiff.py: a minor-faults column, and a warning for `.json` files
   that don't match the `tz-perf-NAME.perf.json` pattern.
 - Code comments in template.rs (around lines 957, 1860, 2530, 3031, 3052,
