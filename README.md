@@ -2,6 +2,30 @@
 
 Safe shell aliases and pipelines as standalone executables.
 
+# Por que?
+
+```
+silounzip = unzip {1:F} -d {1:/.}{:N}
+# unzip a file into a directory named after it, minus the extension;
+# the file must exist, and the directory must not
+
+mvd = mv -t {-1:D} -- {..-1:E}
+# move one or more files/directories into a directory
+# the source items must all exist, and the destination directory must exist
+```
+
+### Safe by default
+Shell aliases and functions are notoriously prone to silent disasters when variables are empty or arguments are missing:
+
+| Scenario                       | Shell Script / Function                      | `rea` Alias                                        |
+|:-------------------------------|:---------------------------------------------|:---------------------------------------------------|
+| **Missing argument**           | `mv $1 $3` (runs with shifted args)          | Refused at creation time: `{3}` used without `{2}` |
+| **Unset environment variable** | `rm -rf "$DIR/"` (runs `rm -rf /`)           | Refuses to run: `{$DIR} is not set`                |
+| **Empty argument list**        | `rm -rf /cache/"$@"` (runs `rm -rf /cache/`) | Token vanishes: runs safe `rm -rf`                 |
+| **Empty argument list**        | `gcc -I"$@"` (passes bare `-I`)              | Word vanishes: -I{@} with no args produces nothing |
+| **Target isn't a directory**   | `mv src/* target/` (clobbers files)          | Aborts before running: `{-1:D}` check fails        |
+| **Spaces in paths**            | Word splits unless meticulously quoted       | Native `argv` substitution; zero quoting needed    |
+
 # Examples and stuff
 
 ### Argument Check Flags
@@ -22,6 +46,16 @@ Safe shell aliases and pipelines as standalone executables.
 | /.       | basename without extension |
 | //       | Parent directory           |
 
+| Modifier  | Meaning                   | `photo.jpg` | `../dir/file.tar.gz` | `.` | `..` |
+|:----------|:--------------------------|:------------|:---------------------|:----|:-----|
+| `{1}`     | Unchanged                 | `photo.jpg` | `../dir/file.tar.gz` | `.` | `..` |
+| `{1:.}`   | Strip extension           | `photo`     | `../dir/file.tar`    | `.` | `..` |
+| `{1:/}`   | Basename                  | `photo.jpg` | `file.tar.gz`        | `.` | `..` |
+| `{1:/.}`  | Basename, no ext          | `photo`     | `file.tar`           | `.` | `..` |
+| `{1://}`  | Parent directory          | `.`         | `../dir`             | `.` | `.`  |
+| `{1:..}`  | Strip whole extension     | `photo`     | `../dir/file`        | `.` | `.`  |
+| `{1:/..}` | Basename, strip whole ext | `photo`     | `file`               | `.` | `.`  |
+
 #### Examples
 
 ```
@@ -29,7 +63,7 @@ for i in photo.jpg ../dir1/dir2/files.tar.gz . .. ; do rea eval 'printf "%s\t%s\
 ```
 
 Convert to relative path and strip trailing `/`
-```
+```console
 > rea eval 'printf "%s\t%s\n" {@} {@+://}/{@+:/}' with-slash/ no-slash
 with-slash/     no-slash
 ./with-slash    ./no-slash
