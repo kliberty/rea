@@ -6,6 +6,7 @@
 //! written into it, so the aliases themselves never run this binary.
 
 mod cli;
+mod replace;
 
 /// Hand over to the command-line interface.
 fn main() {

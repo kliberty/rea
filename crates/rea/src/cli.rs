@@ -5,7 +5,7 @@
 //! no compiler: the definition is validated here, at creation time, with the
 //! same parser the alias runs, so a bad template never becomes an executable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read};
@@ -160,6 +160,34 @@ enum Cmd {
         /// Also remove aliases in DIR that the file no longer defines.
         #[arg(long, conflicts_with = "names")]
         prune: bool,
+        /// Print what would be written and removed, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Update an alias file from the aliases in a directory.
+    ///
+    /// The counterpart of `patch`. An alias the file already defines keeps
+    /// its line, with only the template replaced if it changed; aliases the
+    /// file lacks are appended, in name order, under a `# added by rea save`
+    /// comment. Comments, blank lines, order, and entries with no alias in
+    /// DIR are kept. A file that doesn't parse is refused, and an unchanged
+    /// one is not rewritten.
+    ///
+    /// The file is replaced by renaming a new one over it, or, if it has
+    /// other hard links or an owner a new file wouldn't get, rewritten in
+    /// place with a backup beside it until the write is done. A symlink is
+    /// followed, so the file it points to is the one updated.
+    Save {
+        /// Alias file to update (created if missing).
+        #[arg(value_hint = ValueHint::FilePath)]
+        file: PathBuf,
+        /// Directory to read the aliases from (default: $REA_ALIAS_DIR, or
+        /// else the directory this program is in).
+        #[arg(value_hint = ValueHint::DirPath)]
+        dir: Option<PathBuf>,
+        /// Print what would change, without writing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Validate an alias file without writing anything.
     Check {
@@ -254,7 +282,9 @@ pub fn main() -> ! {
             names,
             output,
             prune,
-        } => patch(&file, &names, &output, prune),
+            dry_run,
+        } => patch(&file, &names, &output, prune, dry_run),
+        Cmd::Save { file, dir, dry_run } => save(&file, dir.as_deref(), dry_run),
         Cmd::Check { file } => check(&file),
         Cmd::List { dir } => list(dir.as_deref()),
         Cmd::Inspect { files } => inspect(&files),
@@ -530,7 +560,11 @@ fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Wrote {
     Created,
+    /// An alias with a different definition was updated.
     Updated,
+    /// An alias with the same definition was rewritten onto a different
+    /// stub, as after upgrading rea.
+    StubOnly,
     /// Same bytes already there; the file (and its mtime) were left alone.
     Unchanged,
     /// A non-alias file was replaced, which only `--replace-non-aliases` allows.
@@ -540,13 +574,17 @@ enum Wrote {
 /// Write one alias into a directory, refusing to clobber unrelated files.
 ///
 /// `dir` must exist, and `name` and `template` must already be validated. A file
-/// that isn't an alias is replaced only with `replace_non_aliases`.
+/// that isn't an alias is replaced only with `replace_non_aliases`. With
+/// `dry_run`, everything is decided and checked the same way, refusals
+/// included, and the result says what would have been written, but nothing
+/// is.
 fn write_alias(
     stub: &Stub,
     dir: &Path,
     name: &str,
     template: &str,
     replace_non_aliases: bool,
+    dry_run: bool,
 ) -> Result<Wrote, String> {
     let target = dir.join(name);
     let bytes = stub.patched(name, template)?;
@@ -557,6 +595,8 @@ fn write_alias(
     {
         Existing::Missing => Wrote::Created,
         Existing::Alias(old) if old == bytes => return Ok(Wrote::Unchanged),
+        // Same definition in different bytes: only the stub changed.
+        Existing::Alias(old) if alias_in(&old) == Some((name, template)) => Wrote::StubOnly,
         Existing::Alias(_) => Wrote::Updated,
         Existing::Other if replace_non_aliases => Wrote::Replaced,
         Existing::Other => {
@@ -566,6 +606,9 @@ fn write_alias(
             ));
         }
     };
+    if dry_run {
+        return Ok(wrote);
+    }
     // Write to a temporary name, then rename: replacing a running executable
     // in place fails with ETXTBSY, and a half-written file must never be left
     // under the alias's name. The leading dot keeps it out of normal listings.
@@ -604,24 +647,29 @@ fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
 
 /// Resolve DIR (the `--out` option) and create it if needed.
 fn output_dir(dir: Option<&Path>) -> Result<PathBuf, String> {
-    let dir = match dir {
-        Some(dir) => dir.to_path_buf(),
-        None => default_dir()?,
-    };
+    let dir = dir.map_or_else(default_dir, |d| Ok(d.to_path_buf()))?;
     fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
     Ok(dir)
 }
 
-/// Print what happened to one alias.
-fn report(wrote: Wrote, path: &Path) {
+/// Print what happened to one alias, or with `dry_run`, what would have.
+fn report(wrote: Wrote, path: &Path, dry_run: bool) {
+    let path = path.display();
     // Unchanged aliases are only counted, so a large rerun stays quiet.
-    let verb = match wrote {
-        Wrote::Created => "created",
-        Wrote::Updated => "updated",
-        Wrote::Replaced => "replaced",
-        Wrote::Unchanged => return,
+    // Replacing a program that isn't an alias is the one change that loses
+    // something, so it says so.
+    let line = match (wrote, dry_run) {
+        (Wrote::Unchanged, _) => return,
+        (Wrote::Created, false) => format!("created {path}"),
+        (Wrote::Updated, false) => format!("updated {path}"),
+        (Wrote::StubOnly, false) => format!("updated {path} (stub only)"),
+        (Wrote::Replaced, false) => format!("replaced {path}, which was not a rea alias"),
+        (Wrote::Created, true) => format!("would create {path}"),
+        (Wrote::Updated, true) => format!("would update {path}"),
+        (Wrote::StubOnly, true) => format!("would update {path} (stub only)"),
+        (Wrote::Replaced, true) => format!("would replace {path}, which is not a rea alias"),
     };
-    println!("{verb} {}", path.display());
+    println!("{line}");
 }
 
 // ---------------------------------------------------------------------------
@@ -640,7 +688,14 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
         Ok(prepared) => prepared,
         Err(err) => return fail(&err),
     };
-    match write_alias(&stub, &dir, name, template, output.replace_non_aliases) {
+    match write_alias(
+        &stub,
+        &dir,
+        name,
+        template,
+        output.replace_non_aliases,
+        false,
+    ) {
         // Say "unchanged" here, unlike in `patch`: with one alias, silence
         // would look like nothing happened for no reason.
         Ok(Wrote::Unchanged) => {
@@ -648,7 +703,7 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
             0
         }
         Ok(wrote) => {
-            report(wrote, &dir.join(name));
+            report(wrote, &dir.join(name), false);
             0
         }
         Err(err) => fail(&err),
@@ -659,7 +714,7 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
 ///
 /// `names` limits it to those aliases; empty means all of them. With `prune`,
 /// aliases the file no longer defines are removed. Returns the exit status.
-fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
+fn patch(file: &Path, names: &[String], output: &Output, prune: bool, dry_run: bool) -> i32 {
     // Validate the whole file first, so a typo anywhere writes nothing.
     let mut source = String::new();
     let entries = match load_alias_file(file, &mut source) {
@@ -671,15 +726,25 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
     if let Some(missing) = names.iter().find(|n| !defined.contains(n.as_str())) {
         return fail(&format!("{} defines no alias `{missing}`", file.display()));
     }
-    let prepared = Stub::load(output.stub.as_deref())
-        .and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
+    // A dry run doesn't create DIR either; a missing one just means every
+    // alias would be created.
+    let dir = if dry_run {
+        output
+            .dir
+            .as_deref()
+            .map_or_else(default_dir, |d| Ok(d.to_path_buf()))
+    } else {
+        output_dir(output.dir.as_deref())
+    };
+    let prepared = Stub::load(output.stub.as_deref()).and_then(|stub| Ok((stub, dir?)));
     let (stub, dir) = match prepared {
         Ok(prepared) => prepared,
         Err(err) => return fail(&err),
     };
 
     // Write the selected aliases, counting outcomes for the summary.
-    let (mut written, mut unchanged, mut failures) = (0, 0, 0);
+    let (mut created, mut updated, mut stub_only, mut replaced) = (0, 0, 0, 0);
+    let (mut unchanged, mut failures) = (0, 0);
     for entry in entries
         .iter()
         .filter(|e| names.is_empty() || names.iter().any(|n| n == e.name))
@@ -690,11 +755,21 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
             entry.name,
             entry.template,
             output.replace_non_aliases,
+            dry_run,
         ) {
-            Ok(Wrote::Unchanged) => unchanged += 1,
             Ok(wrote) => {
-                report(wrote, &dir.join(entry.name));
-                written += 1;
+                report(wrote, &dir.join(entry.name), dry_run);
+                match wrote {
+                    Wrote::Created => created += 1,
+                    Wrote::Updated => updated += 1,
+                    // Counted as updates, with the breakdown in the summary.
+                    Wrote::StubOnly => {
+                        updated += 1;
+                        stub_only += 1;
+                    }
+                    Wrote::Replaced => replaced += 1,
+                    Wrote::Unchanged => unchanged += 1,
+                }
             }
             Err(err) => failures += fail(&err),
         }
@@ -704,11 +779,17 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
     // renamed copy of a still-defined alias is kept. Only files that hold an
     // alias are candidates; nothing else in DIR is ever removed.
     let mut removed = 0;
-    if prune {
+    // A directory a dry run didn't create has nothing in it to prune.
+    if prune && (dir.exists() || !dry_run) {
         match scan(&dir) {
             Ok(found) => {
                 for (path, name, _) in found {
                     if defined.contains(name.as_str()) {
+                        continue;
+                    }
+                    if dry_run {
+                        println!("would remove {}", path.display());
+                        removed += 1;
                         continue;
                     }
                     match fs::remove_file(&path) {
@@ -725,8 +806,19 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool) -> i32 {
             Err(err) => failures += fail(&err),
         }
     }
-    // The summary goes to stderr, so stdout lists only what changed.
-    eprintln!("{written} written, {unchanged} unchanged, {removed} removed, {failures} failed");
+    // The summary goes to stderr, so stdout lists only what changed. One
+    // count per verb on the lines above, and a dry run says so first, since
+    // the counts are of what would happen.
+    let stub_note = if stub_only > 0 {
+        format!(" ({stub_only} stub only)")
+    } else {
+        String::new()
+    };
+    eprintln!(
+        "{}{created} created, {updated} updated{stub_note}, {replaced} replaced, \
+         {unchanged} unchanged, {removed} removed, {failures} failed",
+        if dry_run { "dry run: " } else { "" }
+    );
     if failures > 0 { 1 } else { 0 }
 }
 
@@ -762,6 +854,121 @@ fn list(dir: Option<&Path>) -> i32 {
         println!("{name} = {template}");
     }
     0
+}
+
+/// `save`: bring an alias file up to date with a directory's aliases.
+///
+/// Returns the exit status: 1 if the file can't be updated.
+fn save(file: &Path, dir: Option<&Path>, dry_run: bool) -> i32 {
+    let dir = match dir.map_or_else(default_dir, |d| Ok(d.to_path_buf())) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+    let found = match scan(&dir) {
+        Ok(found) => found,
+        Err(err) => return fail(&err),
+    };
+    let aliases = match distinct_aliases(&found) {
+        Ok(aliases) => aliases,
+        Err(problems) => return fail_all(&problems),
+    };
+    // Follow a symlink, so the file it points to is updated and the link
+    // stays a link. A missing file is created.
+    let target = match fs::symlink_metadata(file) {
+        Ok(_) => match fs::canonicalize(file) {
+            Ok(real) => real,
+            Err(err) => return fail(&format!("cannot resolve {}: {err}", file.display())),
+        },
+        Err(err) if err.kind() == io::ErrorKind::NotFound => file.to_path_buf(),
+        Err(err) => return fail(&format!("cannot read {}: {err}", file.display())),
+    };
+    let source = if target.exists() {
+        match fs::read_to_string(&target) {
+            Ok(source) => source,
+            Err(err) => return fail(&format!("cannot read {}: {err}", target.display())),
+        }
+    } else {
+        String::new()
+    };
+    let merged = match aliasfile::merge(&source, &aliases) {
+        Ok(merged) => merged,
+        Err(errors) => {
+            let problems: Vec<String> = errors
+                .iter()
+                .map(|e| format!("{}:{}: {}", file.display(), e.line, e.message))
+                .collect();
+            return fail_all(&problems);
+        }
+    };
+
+    // Write first, so the lines below only claim changes that happened.
+    let changed = merged.text != source || !target.exists();
+    if changed
+        && !dry_run
+        && let Err(err) = crate::replace::replace(&target, merged.text.as_bytes())
+    {
+        return fail(&err);
+    }
+    // What changed goes to stdout, like `patch`, and the summary to stderr.
+    let (update, add) = if dry_run {
+        ("would update", "would add")
+    } else {
+        ("updated", "added")
+    };
+    for (name, line) in &merged.updated {
+        println!("{update} {name} (line {line})");
+    }
+    for name in &merged.added {
+        println!("{add} {name}");
+    }
+    eprintln!(
+        "{}{} updated, {} added, {} unchanged",
+        if dry_run { "dry run: " } else { "" },
+        merged.updated.len(),
+        merged.added.len(),
+        merged.unchanged
+    );
+    0
+}
+
+/// The aliases found in a directory as `(name, template)` pairs, one per
+/// name, for writing to an alias file.
+///
+/// Two files may hold the same alias, a copy under another name, say; that
+/// is fine when they agree. Different templates under one name can't both
+/// go in the file, and neither can one with a line break, which the file
+/// format has no way to hold.
+fn distinct_aliases(found: &[(PathBuf, String, String)]) -> Result<Vec<(&str, &str)>, Vec<String>> {
+    // Name -> the first file holding it, and its template.
+    let mut first: HashMap<&str, (&Path, &str)> = HashMap::new();
+    let mut aliases = Vec::new();
+    let mut problems = Vec::new();
+    for (path, name, template) in found {
+        if template.contains(['\n', '\r']) {
+            problems.push(format!(
+                "{}: alias `{name}` has a line break in its template",
+                path.display()
+            ));
+            continue;
+        }
+        match first.get(name.as_str()) {
+            None => {
+                first.insert(name, (path, template));
+                aliases.push((name.as_str(), template.as_str()));
+            }
+            Some((other, kept)) if kept.trim() != template.trim() => problems.push(format!(
+                "alias `{name}` differs between {} and {}",
+                other.display(),
+                path.display()
+            )),
+            Some(_) => {}
+        }
+    }
+    if problems.is_empty() {
+        Ok(aliases)
+    } else {
+        Err(problems)
+    }
 }
 
 /// `inspect`: print the definitions stored in alias executables.

@@ -66,7 +66,8 @@ completes under its own name; name the file after it too. An alias for rea
 `complete -F _rea r` after loading it covers the alias too.
 
 **Upgrading:** `make install aliases`. The new stub differs from the old one,
-so every alias is rewritten onto it. `make uninstall` removes the two binaries
+so every alias is rewritten onto it, listed as "updated … (stub only)" unless
+its definition changed too. `make uninstall` removes the two binaries
 and leaves the aliases, which keep working on their own.
 
 **Upgrading from aliasmux:** rea was called aliasmux before. `make install
@@ -102,6 +103,7 @@ ll      = ls -la
 rea check aliases.txt                 # validate only
 rea patch aliases.txt                 # create or update them all
 rea patch aliases.txt --prune         # ...and remove aliases no longer in the file
+rea patch aliases.txt --dry-run       # ...only print what it would do
 rea patch aliases.txt mkvize          # just one
 ```
 
@@ -111,17 +113,31 @@ rea patch aliases.txt mkvize          # just one
   and reports every problem at once.
 - **Only changes are written.** An alias whose definition is unchanged is left
   alone, timestamp included; `patch` lists only what it created, updated or
-  removed.
+  removed, and `--dry-run` lists what it would do without doing it.
 - **Other files are safe.** An existing file is replaced only if it is a
   rea alias. Anything else (another program, the tool, the stub) needs
-  `--replace-non-aliases`. `--prune` only ever removes aliases.
+  `--replace-non-aliases`, and is reported as such ("replaced FILE, which
+  was not a rea alias") and counted apart in the summary. `--prune` only ever
+  removes aliases.
 
 The aliases themselves are the record. `rea list DIR` prints the aliases
 in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
 by `patch aliases.txt` recreates them exactly.
 
+`rea save FILE [DIR]` writes them back into an existing alias file instead,
+the reverse of `patch`. An alias the file already defines keeps its line,
+with only the template replaced if it changed, and new aliases are appended
+in name order under a `# added by rea save` comment, ready to be moved where
+they belong
+(a later `save` adds to that block while it is still at the end). Comments,
+blank lines, order and entries with no alias in DIR stay as they are, and
+`--dry-run` shows what would change. A symlinked file is updated
+through the link, and a hard-linked one is rewritten in place (with a backup
+beside it until the write is done), so the links survive.
+
 ```
 rea list [DIR]                       # aliases in DIR, as an alias file
+rea save FILE [DIR]                  # update an alias file from DIR
 rea inspect ALIAS...                 # definition stored in alias executables
 rea explain ALIAS 'a b.flif'         # what an alias would run, quoted
 rea explain -t TEMPLATE ARGS         # the same for a template
