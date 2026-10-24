@@ -69,7 +69,7 @@ help:
 	@echo "make aliases-prune   the same, and remove aliases no longer in $(ALIASES)"
 	@echo "make check-aliases   validate $(ALIASES) without writing anything"
 	@echo "make clean           remove target/"
-	@echo "make tag				create a new git tag from the version number in Cargo.toml"
+	@echo "make tag             create a new git tag from the version number in Cargo.toml"
 	@echo
 	@echo "Variables: PREFIX=$(PREFIX)  ALIASES=$(ALIASES)  PIE=$(PIE)  COMPLETION_SHELL=$(COMPLETION_SHELL)"
 	@echo "  PIE=no builds non-position-independent binaries: faster alias"
