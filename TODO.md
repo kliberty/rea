@@ -11,6 +11,8 @@ Ideas that are designed or agreed on but not built yet. Newest first.
   - keywords = ["alias", "shell", "cli", "pipeline", "command"]
   - categories = ["command-line-utilities"]
 
+# these ideas more detailed
+
 
 ## Keep patch away from rea's own files
 

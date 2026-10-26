@@ -1,7 +1,8 @@
 # rea
 
-Safe shell aliases and pipelines as standalone executables.
+Safer shell aliases, without the shell
 
+Command aliases as standalone executables, with numbered arguments, pipelines and file checks, validated when you create them.
 # Por que?
 
 ```
