@@ -10,6 +10,7 @@ Ideas that are designed or agreed on but not built yet. Newest first.
 - Add category and keywords to crates.io
   - keywords = ["alias", "shell", "cli", "pipeline", "command"]
   - categories = ["command-line-utilities"]
+  - When a check fails inside rea eval, the message names the alias rea:
 
 # these ideas more detailed
 
