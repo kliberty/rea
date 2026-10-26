@@ -1,10 +1,8 @@
 # rea
 
-Safer shell aliases, without the shell
-
-Command aliases as standalone executables, with numbered arguments, pipelines and file checks, validated when you create them.
-
-Shell aliases that take arguments, chain commands with `|`, `&&`, `||` and `;` as in sh, and check their inputs before they run, without a shell in between.
+Shell aliases that take arguments, chain commands with `|`, `&&`, `||` and
+`;` as in sh, and check their inputs before they run, without a shell in
+between.
 
 ```
 $ rea new mvt 'mv -t {-1:D} -- {..-1:E}'
@@ -172,8 +170,11 @@ alias unless you pass `--replace-non-aliases`.
 Going the other way, `rea save ~/dotfiles/aliases.txt` copies aliases you
 created with `rea new` back into the file. Existing lines keep their place and
 comments; new aliases are appended under a `# added by rea save` comment for
-you to move where they belong. `rea list` prints every alias in a directory
-in the same file format.
+you to move where they belong. Between them, `patch` and `save` keep the file
+and your aliases in step, whichever one you edit.
+
+`rea list` prints every alias in a directory in alias-file format, to read
+or search through.
 
 ## Seeing what an alias will do
 
@@ -440,10 +441,9 @@ penv = printenv {@} | sort            # all variables, or just the ones named
 - **`eval -`** reads one line from stdin as the template, which avoids a layer
   of shell quoting (`rea eval - < template.txt`, or a heredoc). The template's
   own commands then see stdin at end of file.
-- **`list` and `patch` round-trip.** `rea list DIR > aliases.txt` followed by
-  `rea patch aliases.txt` recreates the same aliases.
-- **`save`** keeps comments, blank lines, order and entries with no matching
-  alias. It follows a symlinked file and rewrites a hard-linked one in place
+- **`save` and `patch` round-trip.** `patch` writes aliases from your alias
+  file, and `save` writes changes to the aliases back into it. `save` keeps
+  comments, blank lines, order and entries with no matching alias. It follows a symlinked file and rewrites a hard-linked one in place
   (with a backup beside it until the write finishes), so links survive.
 
 ## How aliases run
