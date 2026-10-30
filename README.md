@@ -148,8 +148,8 @@ $ rea explain -t 'cp -v {..-1:F} {-1:D}' a.png b.png dest
 rea works out the allowed argument count from the template and refuses anything else:
 
 - **Every argument must be used.** An alias can never accept an argument and then ignore it. Numbering can't have gaps: `{3}` needs `{2}` (or a slice covering it). A template like `echo {2}` is rejected when you create it, not when you run it.
-- **Without `{@}`, `{@+}` or a slice, the count is exact.** So `echo {1} {-1}` takes exactly two arguments. To take a first and last argument with anything in between, add `{@}`: `echo {1} {@} {-1}` takes two or more.
-- **Slices and `{@+}` set a minimum.** `{2..}` needs at least two arguments.
+- **Without `{@}`, `{@+}` or an open-ended slice, the count is exact.** So `echo {1} {-1}` takes exactly two arguments. To take a first and last argument with anything in between, add `{@}`: `echo {1} {@} {-1}` takes two or more.
+- **`{@+}` and open-ended slices set a minimum.** `{2..}` grows with the arguments and needs at least two. A slice with both ends counted from the same side is a fixed size: `{..3}` is always exactly two arguments, and `{-3..}` always exactly three.
 - **With slices, `{@}` must be one run at the start or the end**, so it's always clear which arguments it gets.
 
 ```sh
