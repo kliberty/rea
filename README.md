@@ -30,6 +30,7 @@ Each alias is a small standalone executable, so it works anywhere a program does
   - [What is deliberately not supported](#what-is-deliberately-not-supported)
 - [Trying things out: `eval` and `explain`](#trying-things-out-eval-and-explain)
 - [Alias files: `check`, `patch`, `save`, `list`](#alias-files)
+- [Recipes](#recipes)
 - [Errors and exit status](#errors-and-exit-status)
 - [How aliases run](#how-aliases-run)
 - [Command reference](#command-reference)
@@ -37,11 +38,13 @@ Each alias is a small standalone executable, so it works anywhere a program does
 
 ## Installing
 
-Install with Cargo:
+Install from crates.io with Cargo:
 
 ```sh
-cargo install --git https://github.com/kliberty/rea
+cargo install rea
 ```
+
+The source is at <https://github.com/kliberty/rea>.
 
 This installs two executables into Cargo's bin directory (`~/.cargo/bin`), which is normally already on your `PATH`:
 
@@ -56,7 +59,13 @@ Keep them in the same directory. rea looks for `rea-stub` next to itself.
 
 **Where aliases go.** By default rea writes aliases into the directory `rea` itself lives in, so they're on your `PATH` straight away. To keep them somewhere else, set `REA_ALIAS_DIR`, or pass `-o DIR` to commands that write. Whatever directory you use must be on your `PATH`. A missing directory is created, and an empty `REA_ALIAS_DIR` counts as unset.
 
-With a Cargo install, the default is `~/.cargo/bin`. A separate directory keeps your aliases apart from installed tools:
+With a Cargo install, the default is `~/.cargo/bin`. Mixing aliases in with installed tools is safe, because rea can always tell them apart. This removes every alias from a directory and leaves everything else alone:
+
+```sh
+rea patch --prune <(echo)          # prune against an empty alias file; add --dry-run to preview
+```
+
+If you'd rather keep them separate, use a directory of their own:
 
 ```sh
 export REA_ALIAS_DIR=~/.local/share/rea/bin
@@ -139,7 +148,7 @@ $ rea explain -t 'cp -v {..-1:F} {-1:D}' a.png b.png dest
 rea works out the allowed argument count from the template and refuses anything else:
 
 - **Every argument must be used.** Numbering can't have gaps: `{3}` needs `{2}` (or a slice covering it). A template like `echo {2}` is rejected when you create it, not when you run it.
-- **Without `{@}`, `{@+}` or a slice, the count is exact.** So `echo {1} {-1}` takes exactly two arguments, the first and the last. They are never the same argument.
+- **Without `{@}`, `{@+}` or a slice, the count is exact.** So `echo {1} {-1}` takes exactly two arguments. To take a first and last argument with anything in between, add `{@}`: `echo {1} {@} {-1}` takes two or more.
 - **Slices and `{@+}` set a minimum.** `{2..}` needs at least two arguments.
 - **With slices, `{@}` must be one run at the start or the end**, so it's always clear which arguments it gets.
 
@@ -349,6 +358,74 @@ rea list > aliases.txt
 rea patch -o ~/other/bin aliases.txt
 ```
 
+## Recipes
+
+### Keep your alias file in sync with aliases
+
+Aliases can manage aliases. With these two, `rea new` changes are one command away from your file, and a new machine is one command away from your aliases:
+
+```ini
+rea-backup = rea save {$HOME}/aliases.txt
+rea-deploy = rea patch {$HOME}/aliases.txt
+```
+
+### Build bigger aliases from helpers
+
+An alias can call other aliases, in pipelines and lists like any other command. A leading `_` is a handy convention for helpers that aren't meant to be called directly. Here is a complete "change extension" command built from small, separately testable pieces:
+
+```ini
+# helpers
+_nul-sep = printf "%s\0" {@+}
+_die     = perl -e 'die "@ARGV\n"' {@+}
+_ext-ok  = _nul-sep {2} | grep -qazP '^\.\w+\z' || _die {1}: extension \"{2}\" must look like .txt
+_chext   = mv -n -- {2:F} {2:.}{1}{:N}
+
+# chext FILE... .EXT
+chext = _ext-ok {0} {-1} && _nul-sep {@+:F} | xargs -0 -n1 -- _chext {-1}
+```
+
+```
+$ chext a.jpg b.jpg txt
+chext: extension "txt" must look like .txt
+$ chext a.jpg b.jpg .png
+_chext: the word {2:.}{1}{:N} needs a path that doesn't exist yet, but 'b.png' already exists
+    _chext = mv -n -- {2:F} {2:.}{1}{:N}
+```
+
+Some things to notice:
+
+- `_ext-ok {0} …` passes the caller's name down, so the error names `chext` and not the helper.
+- `_die` stands in for the `echo …; exit 1` you'd write in a script.
+- `{@+:F}` checks every file before anything is renamed. Each file is then handed to `_chext`, which does its own checks, one file at a time.
+- `xargs` runs `_chext` once per file, so one failure doesn't stop the rest. In the example above, `a.jpg` was still renamed. `xargs` exits 123 if any run failed.
+
+### Check every output name before doing anything
+
+In the version above, a clash is only discovered when its turn comes. To refuse the whole job up front, put the derived names on a command that ignores its arguments. `true` does nothing, but the checks on its arguments still run before anything starts:
+
+```ini
+chext-strict = _ext-ok {0} {-1} && true {@+:.}{-1}{:N} && _nul-sep {@+:F} | xargs -0 -n1 -- _chext {-1}
+```
+
+```
+$ chext-strict a.jpg b.jpg .png
+chext-strict: the word {@+:.}{-1}{:N} needs a path that doesn't exist yet, but 'b.png' already exists
+```
+
+Nothing is renamed. The checks can't catch two inputs that map to the same new name (`a.jpg a.gif .png`), because neither `a.png` exists yet when they run.
+
+### A one-off helper with `rea eval`
+
+For a per-item step that isn't worth its own alias, run a template through `rea eval` from `xargs`. Single-quote the inner template. `'…'` is fully literal, so the outer alias passes its braces through untouched:
+
+```ini
+backup-each = printf "%s\0" {@+:F} | xargs -0 -n1 rea eval 'cp -- {1} {1}.bak{:N}'
+```
+
+(If the inner template needs single quotes itself, use double quotes and escape its braces instead: `"cp -- \{1\} …"`.)
+
+Errors from the inner template are labelled `rea` rather than with a name, which is the main reason to prefer a named `_helper` alias.
+
 ## Errors and exit status
 
 rea reports problems as early as it can.
@@ -413,6 +490,5 @@ An alias is a copy of `rea-stub` with its definition written into it. Running it
 - **`#` is not a comment inside a template.** In an alias file, `gco = git switch {@+}  # change branch` passes `#`, `change` and `branch` to git. Comments must be on their own line.
 - **`cd` and other builtins don't work.** See [above](#what-is-deliberately-not-supported).
 - **Checks happen before anything runs.** `mkdir {1} && cp x {1:D}` fails if the directory doesn't exist yet, even though the first command would create it.
-- **`{1} {-1}` means exactly two arguments.** Front and back references without `{@}` or a slice fix the count, so they never overlap.
 - **`patch` isn't all-or-nothing about name collisions.** An invalid *file* writes nothing. But if one alias would replace a non-alias program, that alias fails and the others are still written. The exit status is 1. `--dry-run` shows this in advance.
 - **Killing an alias's PID alone** (for example `kill PID`, or `timeout` wrapping a pipeline alias) stops the supervisor but not the commands under it, the same as with `sh -c 'a | b'`. Signal the process group (`kill -- -PGID`), as a terminal's Ctrl-C does, to stop everything.
