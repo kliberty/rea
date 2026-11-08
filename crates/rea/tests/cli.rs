@@ -981,6 +981,27 @@ fn save_refuses_a_file_it_may_not_write() {
 }
 
 #[test]
+fn check_counts_aliases_in_the_singular_too() {
+    let dir = scratch("check-count");
+    let file = dir.join("aliases.txt");
+    fs::write(&file, "a = echo a\n").unwrap();
+    let out = tool(&args!["check", file.as_os_str()]);
+    assert!(
+        stdout(&out).ends_with(": 1 alias, valid\n"),
+        "{}",
+        stdout(&out)
+    );
+    fs::write(&file, "a = echo a\nb = echo b\n").unwrap();
+    let out = tool(&args!["check", file.as_os_str()]);
+    assert!(
+        stdout(&out).ends_with(": 2 aliases, all valid\n"),
+        "{}",
+        stdout(&out)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn save_refuses_aliases_that_disagree() {
     let (dir, aliases) = save_fixture("save-conflict");
     // A copy under another file name that holds a different `ll`.

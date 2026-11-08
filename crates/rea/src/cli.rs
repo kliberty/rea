@@ -827,7 +827,12 @@ fn check(file: &Path) -> i32 {
     let mut source = String::new();
     match load_alias_file(file, &mut source) {
         Ok(entries) => {
-            println!("{}: {} aliases, all valid", file.display(), entries.len());
+            // "all" reads oddly for one alias.
+            let summary = match entries.len() {
+                1 => "1 alias, valid".to_owned(),
+                n => format!("{n} aliases, all valid"),
+            };
+            println!("{}: {summary}", file.display());
             0
         }
         Err(problems) => fail_all(&problems),
