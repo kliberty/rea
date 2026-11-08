@@ -1955,7 +1955,12 @@ fn compute_arity(shape: &Shape) -> Result<Arity, ParseError> {
         // is the one to explain; but `plenty` itself is an internal choice and
         // must not appear in the message.
         let reason = match check_count(shape, plenty, &settled, &mut scratch) {
-            Err(Problem::Unused) => describe_unused(shape, &scratch.unused, plenty),
+            // A gap in the numbering explains it better than everything
+            // unused at `plenty`, which also lists arguments that are unused
+            // only because nothing takes extra ones (`{2..3}` named {3}, the
+            // middle and {-3}..{-1} as well as the {1} it lacks).
+            Err(Problem::Unused) => numbering_gaps(shape)
+                .unwrap_or_else(|| describe_unused(shape, &scratch.unused, plenty)),
             Err(Problem::Gap { used, missing }) => {
                 format!("{used} is used but {missing} is not, and no slice covers that argument")
             }
@@ -1987,28 +1992,125 @@ fn describe_unused(shape: &Shape, positions: &[usize], plenty: usize) -> String 
     let k = shape.max_magnitude();
     // Front positions, then the middle (one name for all of it), then the
     // back, which keeps argument order.
-    let mut names: Vec<String> = positions
-        .iter()
-        .filter(|&&p| p <= k)
-        .map(|p| format!("{{{p}}}"))
-        .collect();
+    let front: Vec<usize> = positions.iter().copied().filter(|&p| p <= k).collect();
     let middle = positions.iter().any(|&p| p > k && p <= plenty - k);
+    // Back positions as `{-N}` numbers, listed in argument order.
+    let back: Vec<usize> = positions
+        .iter()
+        .filter(|&&p| p > plenty - k)
+        .map(|&p| plenty + 1 - p)
+        .collect();
+    let mut names = name_runs(&front, "");
     if middle {
-        names.push("the ones in between".to_owned());
+        names.push(("the ones in between".to_owned(), true));
     }
-    names.extend(
-        positions
-            .iter()
-            .filter(|&&p| p > plenty - k)
-            .map(|&p| format!("{{-{}}}", plenty + 1 - p)),
-    );
-    match names.split_last() {
-        // Only the middle: no reference names it, so say what it is.
-        Some((_, [])) if middle => "nothing uses the arguments in between".to_owned(),
-        Some((only, [])) => format!("nothing uses argument {only}"),
-        Some((last, init)) => format!("nothing uses arguments {} and {last}", init.join(", ")),
-        // Unreachable: there is at least one unused position.
-        None => "some arguments would never be used".to_owned(),
+    names.extend(name_runs(&back, "-"));
+    // Only the middle: no reference names it, so say what it is.
+    if middle && names.len() == 1 {
+        return "nothing uses the arguments in between".to_owned();
+    }
+    nothing_uses(&names)
+}
+
+/// Describe numbers missing at the front or back of the numbering, if any:
+/// numbers below the highest one a template counts from that end, used by
+/// nothing counted from that end, as "nothing uses argument {1}".
+///
+/// A slice's start counts like `{N}` (`{2..3}` lacks `{1}`), and so does its
+/// end (`{..-2}` lacks `{-2}` and `{-1}`, which come after it). This only
+/// explains a template no count works for; it doesn't decide that, since a
+/// reference counted from the other end can cover such a number at one count.
+fn numbering_gaps(shape: &Shape) -> Option<String> {
+    let mut names = Vec::new();
+    for back in [false, true] {
+        // The number of an index counted from this end, if it is.
+        let from_here = |i: Index| match i {
+            Index::Front(k) if !back => Some(k),
+            Index::Back(k) if back => Some(k),
+            _ => None,
+        };
+        // Numbers used outright, the highest number that needs everything
+        // below it used, and where an open-ended slice starts covering.
+        let mut used: Vec<usize> = shape.indexes.iter().filter_map(|&i| from_here(i)).collect();
+        let mut highest = used.iter().copied().max().unwrap_or(0);
+        let mut open_from = usize::MAX;
+        for &(start, end) in &shape.slices {
+            // Read from this end, a slice runs from `near`, its first argument
+            // counted from here, away from this end, up to `far` if that is
+            // counted from here too. From the front: near is the start (none
+            // means {1}), and the exclusive end is far. From the back: no end
+            // means through {-1}, an end `{-B}` stops before it, so near is
+            // -(B+1); far is the start, inclusive.
+            let (near, far) = if back {
+                (
+                    end.map_or(Some(1), |e| from_here(e).map(|b| b + 1)),
+                    start.and_then(from_here).map(|a| a + 1),
+                )
+            } else {
+                (
+                    from_here(start.unwrap_or(Index::Front(1))),
+                    end.and_then(from_here),
+                )
+            };
+            let Some(near) = near else { continue };
+            // Everything between this end and the slice must be used.
+            highest = highest.max(near - 1);
+            match far {
+                // Both ends counted from here: near up to (not including) far.
+                Some(far) => used.extend(near..far),
+                // Open towards the other end: everything from near on.
+                None => open_from = open_from.min(near),
+            }
+        }
+        let sign = if back { "-" } else { "" };
+        let mut missing: Vec<usize> = (1..=highest)
+            .filter(|k| *k < open_from && !used.contains(k))
+            .collect();
+        // Back numbers go in argument order: {-3} before {-1}.
+        if back {
+            missing.reverse();
+        }
+        names.extend(name_runs(&missing, sign));
+    }
+    (!names.is_empty()).then(|| nothing_uses(&names))
+}
+
+/// Name numbers as references, collapsing runs of three or more:
+/// `{1} through {4998}`. Each name comes with whether it stands for more
+/// than one argument. `numbers` must be sorted, ascending or descending.
+fn name_runs(numbers: &[usize], sign: &str) -> Vec<(String, bool)> {
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i < numbers.len() {
+        // Extend the run while the numbers stay consecutive.
+        let mut j = i;
+        while j + 1 < numbers.len() && numbers[j + 1].abs_diff(numbers[j]) == 1 {
+            j += 1;
+        }
+        let (first, last) = (numbers[i], numbers[j]);
+        // Arbitrary: two in a row read better as "{1} and {2}".
+        if j - i >= 2 {
+            names.push((format!("{{{sign}{first}}} through {{{sign}{last}}}"), true));
+        } else {
+            for &n in &numbers[i..=j] {
+                names.push((format!("{{{sign}{n}}}"), false));
+            }
+        }
+        i = j + 1;
+    }
+    names
+}
+
+/// "nothing uses argument {1}" or "nothing uses arguments {1}, {3} and {-1}".
+fn nothing_uses(names: &[(String, bool)]) -> String {
+    match names {
+        [] => "some arguments would never be used".to_owned(),
+        [(only, false)] => format!("nothing uses argument {only}"),
+        [(only, true)] => format!("nothing uses arguments {only}"),
+        [init @ .., (last, _)] => {
+            let init: Vec<&str> = init.iter().map(|(name, _)| name.as_str()).collect();
+            format!("nothing uses arguments {} and {last}", init.join(", "))
+        }
     }
 }
 
@@ -2688,6 +2790,39 @@ mod tests {
         );
         // {1} and {-1} are distinct arguments, but nothing uses the middle.
         assert_eq!(arity("cmd {1} {-1}"), "exactly 2 arguments");
+    }
+
+    #[test]
+    fn unused_messages_name_the_gap() {
+        // A slice that starts late lacks the numbers before it. The message
+        // used to list everything unused at a large count instead: for
+        // `{2..3}`, {1}, {3}, the ones in between and {-3} through {-1}.
+        let reason = |src: &str| {
+            let message = parse(src).unwrap_err().message;
+            let prefix = "no number of arguments works with this template: ";
+            message.strip_prefix(prefix).unwrap_or(&message).to_owned()
+        };
+        assert_eq!(reason("echo {2..3}"), "nothing uses argument {1}");
+        assert_eq!(reason("echo {1} {3..5}"), "nothing uses argument {2}");
+        // From the back, a slice's end works the same way.
+        assert_eq!(
+            reason("echo {..-2}"),
+            "nothing uses arguments {-2} and {-1}"
+        );
+        assert_eq!(reason("echo {-3..-1}"), "nothing uses argument {-1}");
+        // Runs of three or more collapse, however long (here up to the cap,
+        // which is smaller in unit tests).
+        assert_eq!(
+            reason(&format!("echo {{{}..}}", MAX_POSITION)),
+            format!(
+                "nothing uses arguments {{1}} through {{{}}}",
+                MAX_POSITION - 1
+            )
+        );
+        assert_eq!(
+            reason("echo {5..} {-1}"),
+            "nothing uses arguments {1} through {4}"
+        );
     }
 
     #[test]
