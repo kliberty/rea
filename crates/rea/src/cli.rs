@@ -119,7 +119,8 @@ struct Cli {
 #[derive(clap::Args)]
 struct Output {
     /// Directory for the aliases (default: $REA_ALIAS_DIR, or else the
-    /// directory this program is in).
+    /// directory this program is in). Created if missing, but not its
+    /// parents.
     #[arg(short = 'o', long = "out", value_name = "DIR", value_hint = ValueHint::DirPath)]
     dir: Option<PathBuf>,
     /// The stub executable to copy (default: rea-stub next to this program).
@@ -689,9 +690,36 @@ fn scan(dir: &Path) -> Result<Vec<(PathBuf, String, String)>, String> {
 }
 
 /// Resolve DIR (the `--out` option) and create it if needed.
-fn output_dir(dir: Option<&Path>) -> Result<PathBuf, String> {
+///
+/// Only DIR itself is created, never its parents: with missing parents
+/// created too, a typo in `-o` or `$REA_ALIAS_DIR` left a stray tree of
+/// directories behind. With `dry_run`, nothing is created, but a DIR that
+/// couldn't be is refused the same way.
+fn output_dir(dir: Option<&Path>, dry_run: bool) -> Result<PathBuf, String> {
     let dir = dir.map_or_else(default_dir, |d| Ok(d.to_path_buf()))?;
-    fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+    if dir.is_dir() {
+        return Ok(dir);
+    }
+    // A bare name like `aliases` has an empty parent: the current directory.
+    let parent = match dir.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    if !parent.is_dir() {
+        let problem = if parent.exists() {
+            "is not a directory"
+        } else {
+            "does not exist"
+        };
+        return Err(format!(
+            "cannot create {}: {} {problem}",
+            dir.display(),
+            parent.display()
+        ));
+    }
+    if !dry_run {
+        fs::create_dir(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+    }
     Ok(dir)
 }
 
@@ -726,7 +754,7 @@ fn new(name: &str, template: &str, output: &Output) -> i32 {
         return fail(&problem);
     }
     let prepared = Stub::load(output.stub.as_deref())
-        .and_then(|stub| Ok((stub, output_dir(output.dir.as_deref())?)));
+        .and_then(|stub| Ok((stub, output_dir(output.dir.as_deref(), false)?)));
     let (stub, dir) = match prepared {
         Ok(prepared) => prepared,
         Err(err) => return fail(&err),
@@ -770,15 +798,8 @@ fn patch(file: &Path, names: &[String], output: &Output, prune: bool, dry_run: b
         return fail(&format!("{} defines no alias `{missing}`", file.display()));
     }
     // A dry run doesn't create DIR either; a missing one just means every
-    // alias would be created.
-    let dir = if dry_run {
-        output
-            .dir
-            .as_deref()
-            .map_or_else(default_dir, |d| Ok(d.to_path_buf()))
-    } else {
-        output_dir(output.dir.as_deref())
-    };
+    // alias would be created, unless a real run couldn't create it.
+    let dir = output_dir(output.dir.as_deref(), dry_run);
     let prepared = Stub::load(output.stub.as_deref()).and_then(|stub| Ok((stub, dir?)));
     let (stub, dir) = match prepared {
         Ok(prepared) => prepared,

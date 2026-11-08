@@ -1104,6 +1104,36 @@ fn wrong_counts_show_the_usage_line_a_run_would() {
 }
 
 #[test]
+fn output_dirs_are_created_one_level_deep() {
+    let dir = scratch("output-dir");
+    // The directory itself is created...
+    let fresh = dir.join("fresh");
+    let out = tool(&args!["new", "t", "echo", "-o", fresh.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(fresh.join("t").is_file());
+    // ...but not missing parents, so a typo can't leave a tree behind. The
+    // same goes for a dry run, which creates nothing either way.
+    let deep = dir.join("typo").join("aliases");
+    let out = tool(&args!["new", "t", "echo", "-o", deep.as_os_str()]);
+    assert_eq!(out.status.code(), Some(1));
+    let expected = format!("{} does not exist", dir.join("typo").display());
+    assert!(stderr(&out).contains(&expected), "{}", stderr(&out));
+    let file = dir.join("aliases.txt");
+    fs::write(&file, "t = echo\n").unwrap();
+    let out = tool(&args![
+        "patch",
+        file.as_os_str(),
+        "-o",
+        deep.as_os_str(),
+        "--dry-run"
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains(&expected), "{}", stderr(&out));
+    assert!(!dir.join("typo").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_counts_aliases_in_the_singular_too() {
     let dir = scratch("check-count");
     let file = dir.join("aliases.txt");

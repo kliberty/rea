@@ -50,7 +50,9 @@ has one: `new` and `patch` write there, `list` lists it, and `explain` and
 `inspect` look there last for a bare name. It suits `cargo install rea`,
 which puts rea in `~/.cargo/bin` among other programs; with
 `export REA_ALIAS_DIR=~/.local/bin` the aliases go there instead. `-o DIR`
-still overrides it, and an empty value counts as unset.
+still overrides it, and an empty value counts as unset. Either directory is
+created if it's missing, but its parent has to exist, so a typo can't leave
+a tree of new directories behind.
 
 **Tab completion:** `rea completions bash|zsh|fish` prints a completion
 script for subcommands, options and file names. For bash:
