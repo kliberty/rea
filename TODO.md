@@ -21,6 +21,40 @@ Ideas that are designed or agreed on but not built yet. Newest first.
 - `hot-order` is unmerged and still uses the old names; rename it if it
   should ever land.
 
+## Stop the supervised stages when the alias is killed
+
+Killing a supervised alias (a pipeline or a list) doesn't stop what it
+runs. SIGTERM isn't caught (run.rs, `shield_from_terminal_signals`, says
+so on purpose, matching `bash -c`), so the supervisor dies at once: the
+running stages are orphaned and keep going, and the later steps never
+run. For `flif270`, `flif` and `convert` go on writing `{1}.rot.flif`,
+the `mv` never happens, and nobody gets an exit status. `kill -INT PID`
+does nothing visible: the no-op handler absorbs it, and the children
+never see it, since only the terminal sends SIGINT to the whole process
+group. A single-command alias is unaffected, since it's exec'd.
+
+Proposal: catch SIGTERM and SIGHUP and forward them to every running
+stage, keep waiting, skip the remaining steps (`;` included, as after
+Ctrl-C), and exit by the same signal (`exit_with` already handles both).
+Process managers (systemd, supervisord, `timeout`) signal the PID they
+started and expect the work to stop.
+
+Open questions:
+
+- SIGINT and SIGQUIT: forwarding them naively double-delivers Ctrl-C,
+  since the children already get it from the terminal, and ffmpeg takes
+  a second Ctrl-C as "quit without finalizing". With `SA_SIGINFO`, a
+  terminal-generated signal has `si_code` `SI_KERNEL`, and one from
+  `kill()` has `SI_USER` and the sender's PID, so the supervisor could
+  forward only the latter. Edge: `kill -INT -PGID` reaches the children
+  directly and the supervisor as `SI_USER`, so they'd get it twice.
+- SIGKILL can't be caught, so `kill -9` always orphans the stages.
+  `PR_SET_PDEATHSIG` in each child would fix that, but it has to be set
+  between fork and exec, which costs std's `posix_spawn` path (the same
+  trade-off as keeping SIGCHLD ignored for the stages).
+- Whether to keep `bash -c` compatibility as the reference at all, or
+  document the deviation where the comment now cites it.
+
 ## Remove the implicit {@}
 
 Decided: a single command with no references no longer gets `{@}` appended.
