@@ -981,6 +981,37 @@ fn save_refuses_a_file_it_may_not_write() {
 }
 
 #[test]
+fn arguments_after_the_target_are_never_flags() {
+    // Right after the template or alias, an argument that matches one of
+    // rea's own flags is still an argument.
+    let out = tool(&args!["eval", "echo {@}", "-h", "--help", "-t"]);
+    assert_eq!(stdout(&out), "-h --help -t\n", "{}", stderr(&out));
+    let out = tool(&args!["explain", "-t", "echo {1} {2}", "-t", "x"]);
+    assert!(
+        stdout(&out).starts_with("   echo -t x\n"),
+        "{}",
+        stderr(&out)
+    );
+
+    let dir = scratch("explain-flags");
+    let out = tool(&args![
+        "new",
+        "two",
+        "echo {1} {2}",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = tool(&args!["explain", dir.join("two").as_os_str(), "-t", "x"]);
+    assert!(
+        stdout(&out).starts_with("   echo -t x\n"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_counts_aliases_in_the_singular_too() {
     let dir = scratch("check-count");
     let file = dir.join("aliases.txt");

@@ -226,13 +226,22 @@ enum Cmd {
         /// Treat TARGET as template source rather than an alias executable.
         #[arg(short = 't', long = "template")]
         is_template: bool,
-        /// Alias executable: a path, or a bare name to look up (template
-        /// source, with -t).
-        #[arg(value_hint = ValueHint::FilePath)]
-        target: String,
-        /// Arguments to expand with.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_hint = ValueHint::AnyPath)]
-        args: Vec<OsString>,
+        /// The alias executable (a path, or a bare name to look up), or the
+        /// template source with -t, then the arguments to expand with.
+        ///
+        /// Constraint on change: these are one list so that everything after
+        /// the target is an argument. As separate positionals, clap read an
+        /// argument right after the target as one of explain's own flags if
+        /// it matched one (`explain ALIAS -t` switched to template mode).
+        #[arg(
+            required = true,
+            num_args = 1..,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_names = ["TARGET", "ARGS"],
+            value_hint = ValueHint::AnyPath
+        )]
+        target_and_args: Vec<OsString>,
     },
     /// Run a template directly, to try it out before creating an alias.
     ///
@@ -240,11 +249,20 @@ enum Cmd {
     /// then leaves the template's commands with stdin already at end of file.
     #[command(after_long_help = SYNTAX)]
     Eval {
-        /// Template source (quote it for your shell), or `-` to read it from stdin.
-        template: String,
-        /// Arguments for the template, passed through untouched.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_hint = ValueHint::AnyPath)]
-        args: Vec<OsString>,
+        /// The template source (quote it for your shell), or `-` to read it
+        /// from stdin, then the arguments for it, passed through untouched.
+        ///
+        /// Constraint on change: one list, as with explain, so that an
+        /// argument right after the template is never read as a flag (`-h`).
+        #[arg(
+            required = true,
+            num_args = 1..,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_names = ["TEMPLATE", "ARGS"],
+            value_hint = ValueHint::AnyPath
+        )]
+        template_and_args: Vec<OsString>,
     },
     /// Print a tab-completion script for a shell.
     ///
@@ -290,13 +308,36 @@ pub fn main() -> ! {
         Cmd::Inspect { files } => inspect(&files),
         Cmd::Explain {
             is_template,
-            target,
-            args,
-        } => explain(is_template, &target, &args),
-        Cmd::Eval { template, args } => eval(template, &args),
+            target_and_args,
+        } => match split_first_utf8(target_and_args, "target") {
+            Ok((target, args)) => explain(is_template, &target, &args),
+            Err(err) => fail(&err),
+        },
+        Cmd::Eval { template_and_args } => match split_first_utf8(template_and_args, "template") {
+            Ok((template, args)) => eval(template, &args),
+            Err(err) => fail(&err),
+        },
         Cmd::Completions { shell } => completions(shell),
     };
     std::process::exit(status);
+}
+
+/// Split a non-empty argument list into its first entry, which must be
+/// UTF-8, and the rest.
+///
+/// For the `TARGET ARGS...` lists of explain and eval: clap enforces at
+/// least one entry, and the first is template text or a name, which the
+/// template parser needs as a `str`. `what` names it in the error.
+fn split_first_utf8(
+    mut list: Vec<OsString>,
+    what: &str,
+) -> Result<(String, Vec<OsString>), String> {
+    let rest = list.split_off(1);
+    let first = list.pop().expect("clap requires at least one value");
+    let first = first
+        .into_string()
+        .map_err(|raw| format!("the {what} is not valid UTF-8: {}", raw.to_string_lossy()))?;
+    Ok((first, rest))
 }
 
 /// Print the completion script for `shell` to stdout.
