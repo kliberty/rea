@@ -3503,10 +3503,7 @@ mod tests {
             let text = format!("ab{c}cd");
             assert_eq!(ordinary_run(&text), 2, "{c:?}");
         }
-        assert_eq!(
-            ordinary_run("./dir-name/trueZ.x_y+z=1,2@3%5^6#7!8[9]:"),
-            40
-        );
+        assert_eq!(ordinary_run("./dir-name/trueZ.x_y+z=1,2@3%5^6#7!8[9]:"), 40);
         assert_eq!(ordinary_run(""), 0);
         // Runs and single quotes give the same words as before.
         assert_eq!(
