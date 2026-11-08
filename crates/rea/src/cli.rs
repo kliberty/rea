@@ -891,15 +891,46 @@ fn list(dir: Option<&Path>) -> i32 {
         Ok(found) => found,
         Err(err) => return fail(&err),
     };
-    for (path, name, template) in &found {
+    // Each name is defined once, so the output stays a file `patch` accepts;
+    // other files holding the same alias only get a comment. `scan` sorts by
+    // name, so copies are next to each other.
+    let mut problems = Vec::new();
+    for copies in found.chunk_by(|a, b| a.1 == b.1) {
+        let name = &copies[0].1;
+        let named_after = |path: &Path| path.file_name() == Some(OsStr::new(name));
+        // The copy in the file named after the alias is the one defined, if
+        // there is one; otherwise the first.
+        let (main_path, _, template) = copies
+            .iter()
+            .find(|(path, ..)| named_after(path))
+            .unwrap_or(&copies[0]);
         // A file not named after its alias is worth knowing about, and a
         // comment line keeps the output a valid alias file.
-        if path.file_name() != Some(OsStr::new(name)) {
-            println!("# {} holds alias `{name}`", path.display());
+        if !named_after(main_path) {
+            println!("# {} holds alias `{name}`", main_path.display());
         }
         println!("{name} = {template}");
+        for (path, _, other) in copies.iter().filter(|(path, ..)| path != main_path) {
+            // Templates are compared trimmed, as an alias file stores them.
+            if other.trim() == template.trim() {
+                println!("# {} is a copy of `{name}`", path.display());
+            } else {
+                // Only one of the two can be defined, so the output no longer
+                // recreates the directory: say so, and fail.
+                println!("# {} holds a different `{name}`: {other}", path.display());
+                problems.push(format!(
+                    "alias `{name}` differs between {} and {}",
+                    main_path.display(),
+                    path.display()
+                ));
+            }
+        }
     }
-    0
+    if problems.is_empty() {
+        0
+    } else {
+        fail_all(&problems)
+    }
 }
 
 /// `save`: bring an alias file up to date with a directory's aliases.

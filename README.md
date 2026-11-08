@@ -122,7 +122,9 @@ rea patch aliases.txt mkvize          # just one
 
 The aliases themselves are the record. `rea list DIR` prints the aliases
 in a directory as an alias file, so `list ~/.local/bin > aliases.txt` followed
-by `patch aliases.txt` recreates them exactly.
+by `patch aliases.txt` recreates them exactly. A copy of an alias under
+another file name is listed as a comment, since each name is defined once;
+copies that disagree make `list` fail after printing.
 
 `rea save FILE [DIR]` writes them back into an existing alias file instead,
 the reverse of `patch`. An alias the file already defines keeps its line,

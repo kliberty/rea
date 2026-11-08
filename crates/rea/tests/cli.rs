@@ -1012,6 +1012,67 @@ fn arguments_after_the_target_are_never_flags() {
 }
 
 #[test]
+fn list_defines_each_alias_once() {
+    let dir = scratch("list-copies");
+    let aliases = dir.join("aliases");
+    let out = tool(&args![
+        "new",
+        "two",
+        "echo {1} {2}",
+        "-o",
+        aliases.to_str().unwrap()
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    fs::copy(aliases.join("two"), aliases.join("two-copy")).unwrap();
+
+    // A copy is mentioned in a comment, so the output is still an alias file
+    // that check (and so patch) accepts.
+    let out = tool(&args!["list", aliases.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let listed: Vec<&str> = text.lines().collect();
+    assert_eq!(listed.len(), 2, "{}", stdout(&out));
+    assert_eq!(listed[0], "two = echo {1} {2}");
+    assert!(
+        listed[1].ends_with("two-copy is a copy of `two`"),
+        "{}",
+        listed[1]
+    );
+    let file = dir.join("listed.txt");
+    fs::write(&file, stdout(&out)).unwrap();
+    let check = tool(&args!["check", file.as_os_str()]);
+    assert!(check.status.success(), "{}", stderr(&check));
+
+    // A different alias under the same name can't be listed as well: the
+    // output keeps the file named after the alias, comments the other, and
+    // the status says the listing is incomplete.
+    let other = dir.join("other");
+    let out = tool(&args![
+        "new",
+        "two",
+        "echo {2} {1}",
+        "-o",
+        other.to_str().unwrap()
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    fs::copy(other.join("two"), aliases.join("atwo")).unwrap();
+    let out = tool(&args!["list", aliases.as_os_str()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stdout(&out).starts_with("two = echo {1} {2}\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stdout(&out).contains("atwo holds a different `two`: echo {2} {1}"));
+    assert!(
+        stderr(&out).contains("alias `two` differs between"),
+        "{}",
+        stderr(&out)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_counts_aliases_in_the_singular_too() {
     let dir = scratch("check-count");
     let file = dir.join("aliases.txt");
