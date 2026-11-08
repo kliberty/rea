@@ -1073,6 +1073,37 @@ fn list_defines_each_alias_once() {
 }
 
 #[test]
+fn wrong_counts_show_the_usage_line_a_run_would() {
+    let dir = scratch("usage-line");
+    let out = tool(&args![
+        "new",
+        "two",
+        "echo {1} {2}",
+        "-o",
+        dir.to_str().unwrap()
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let alias = dir.join("two");
+    let expected = "expected exactly 2 arguments, got 1\n    two = echo {1} {2}\n";
+
+    // The alias itself, and explain on it, show `name = template`.
+    let out = Command::new(&alias).arg("only").output().unwrap();
+    assert_eq!(stderr(&out), format!("two: {expected}"));
+    let out = tool(&args!["explain", alias.as_os_str(), "only"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stderr(&out), format!("rea: {expected}"));
+
+    // A bare template has no alias name to show, so it appears alone.
+    let bare = "rea: expected exactly 2 arguments, got 1\n    echo {1} {2}\n";
+    assert_eq!(stderr(&tool(&args!["eval", "echo {1} {2}", "only"])), bare);
+    assert_eq!(
+        stderr(&tool(&args!["explain", "-t", "echo {1} {2}", "only"])),
+        bare
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_counts_aliases_in_the_singular_too() {
     let dir = scratch("check-count");
     let file = dir.join("aliases.txt");

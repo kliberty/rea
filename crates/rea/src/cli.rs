@@ -1194,7 +1194,10 @@ fn explain(is_template: bool, target: &str, args: &[OsString]) -> i32 {
     } = match parsed.preview(&name, args) {
         Ok(preview) => preview,
         Err(err) => {
-            fail(&err.to_string());
+            // The same usage line a real run prints: `name = template` for an
+            // alias, the template alone with -t.
+            let alias = (!is_template).then_some(name.as_str());
+            fail(&format!("{err}\n{}", rea_core::usage_line(alias, &source)));
             return rea_core::USAGE_ERROR;
         }
     };
