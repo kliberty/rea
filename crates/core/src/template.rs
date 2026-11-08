@@ -975,17 +975,15 @@ fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
     let end = (!end.is_empty())
         .then(|| parse_index(end, body))
         .transpose()?;
-    // Store a `{1..` start as None, so `{1..3}` and `{..3}` are equal (which
-    // matters when one word repeats the same slice twice).
-    let start = start.filter(|&s| s != Index::Front(1));
     // Ends counted the same way can be compared without knowing the count, so
     // a slice that is always empty is reported now, with the end rule spelled
-    // out. Constraint on change: ends were inclusive at first, and `{-1}
-    // {..-1}` then passed the last argument twice, against everyone's reading
-    // of it (and against Python's [:-1]); exclusive ends it is.
-    let always_empty = match (start, end) {
-        (Some(Index::Front(a)), Some(Index::Front(b))) => a >= b,
-        (Some(Index::Back(a)), Some(Index::Back(b))) => a <= b,
+    // out. A missing start is the first argument, so `{..1}` counts too.
+    // Constraint on change: ends were inclusive at first, and `{-1} {..-1}`
+    // then passed the last argument twice, against everyone's reading of it
+    // (and against Python's [:-1]); exclusive ends it is.
+    let always_empty = match (start.unwrap_or(Index::Front(1)), end) {
+        (Index::Front(a), Some(Index::Front(b))) => a >= b,
+        (Index::Back(a), Some(Index::Back(b))) => a <= b,
         _ => false,
     };
     if always_empty {
@@ -993,6 +991,10 @@ fn parse_slice(start: &str, end: &str, body: &str) -> Result<Ref, String> {
             "`{{{body}}}` is always empty; a slice stops before its end, so {{2..4}} is the 2nd and 3rd"
         ));
     }
+    // Store a `{1..` start as None, so `{1..3}` and `{..3}` are equal (which
+    // matters when one word repeats the same slice twice). Only after the
+    // check above, which quotes the slice as written.
+    let start = start.filter(|&s| s != Index::Front(1));
     Ok(Ref::Multi(Multi::Slice(start, end), Format::default()))
 }
 
@@ -2709,6 +2711,8 @@ mod tests {
             ("echo {2..2}", 5),
             ("echo {-1..-2}", 5),
             ("echo {-1..-1}", 5),
+            ("echo {1..1}", 5),
+            ("echo {..1}", 5),
             ("echo {1..0}", 5),
             ("echo {@}{1..}", 8),
             ("a | | b", 4),
@@ -2757,13 +2761,18 @@ mod tests {
 
     #[test]
     fn end_rule_is_spelled_out() {
-        // Whoever writes an always-empty slice gets the rule with the error.
-        assert!(
-            parse("echo {2..2}")
-                .unwrap_err()
-                .message
-                .contains("stops before its end")
-        );
+        // Whoever writes an always-empty slice gets the rule with the error,
+        // with the slice quoted as written: a `{1..` start is stored as no
+        // start, and the message once showed `{1..1}` as `{..1}`.
+        for (src, quoted) in [
+            ("echo {2..2}", "`{2..2}`"),
+            ("echo {1..1}", "`{1..1}`"),
+            ("echo {..1}", "`{..1}`"),
+        ] {
+            let message = parse(src).unwrap_err().message;
+            assert!(message.contains("stops before its end"), "{src}: {message}");
+            assert!(message.starts_with(quoted), "{src}: {message}");
+        }
     }
 
     #[test]
