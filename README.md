@@ -240,6 +240,12 @@ up stdin, so the template's own commands then see stdin at end of file.
   than silently passed through. Quote or escape them to pass them literally;
   `$` and backticks need `\$` and `` \` `` even inside double quotes, as in sh.
   `find -exec ... '{}' \;` needs the braces and `;` quoted, also as in sh.
+- So is `~` where a shell might expand it: at the start of a word, after
+  `=`, or after `:` in a word with an `=` (`PATH=a:~/b`). Shells disagree on
+  some of these (bash leaves `--dir=~/x` alone, zsh can expand it), so the
+  template has to say which it means: `{$HOME}` for the home directory, or
+  `\~` or `'~'` for a literal tilde. `a~b` is plain text. Aliases made before
+  this rule keep running, with the tilde passed literally as before.
 
 ## Runtime behavior
 

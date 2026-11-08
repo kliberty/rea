@@ -1053,6 +1053,8 @@ struct Lexed {
     tokens: Vec<Token>,
     /// Every reference with the offset of its `{`, for whole-template checks.
     refs: Vec<(Ref, usize)>,
+    /// Offsets of unquoted tildes where a shell might expand them.
+    tildes: Vec<usize>,
 }
 
 /// Split template source into words and operators, collecting references in
@@ -1060,6 +1062,7 @@ struct Lexed {
 fn lex(src: &str) -> Result<Lexed, ParseError> {
     let mut tokens = Vec::new();
     let mut refs = Vec::new();
+    let mut tildes = Vec::new();
     let mut chars = Cursor { src, pos: 0 };
     // `Some` while inside a word. A word starts at its first character, which
     // may be a quote; that is how `''` becomes an (empty) word at all.
@@ -1207,6 +1210,30 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
                 ));
             }
 
+            // A tilde where some shell would expand it to a home directory:
+            // at the start of a word, after `=` (bash only in `NAME=~`, zsh
+            // with magic_equal_subst in `--opt=~` too), or after `:` in a
+            // word with an `=` before it (`PATH=a:~/b`). `parse` refuses
+            // those, since no shell runs the template and the shells
+            // disagree. Anywhere else (`a~b`) it is ordinary text.
+            '~' => {
+                let prev = src[..offset].chars().next_back();
+                let expandable = match &word {
+                    None => true,
+                    Some(builder) => {
+                        prev == Some('=')
+                            || (prev == Some(':') && src[builder.start..offset].contains('='))
+                    }
+                };
+                // Recorded, not refused: aliases made before this rule must
+                // keep running (see `parse`).
+                if expandable {
+                    tildes.push(offset);
+                }
+                word.get_or_insert_with(|| WordBuilder::new(offset))
+                    .push_char('~');
+            }
+
             // Other shell syntax that would silently mean something else here.
             '`' | '(' | ')' | '<' | '>' | '*' | '?' => {
                 return Err(ParseError::new(
@@ -1237,7 +1264,11 @@ fn lex(src: &str) -> Result<Lexed, ParseError> {
     }
     // The last word has no trailing separator to end it.
     end_word(&mut word, &mut tokens, src, src.len())?;
-    Ok(Lexed { tokens, refs })
+    Ok(Lexed {
+        tokens,
+        refs,
+        tildes,
+    })
 }
 
 /// The lexer's position in the template, yielding `(byte offset, char)` like
@@ -1298,7 +1329,7 @@ const ORDINARY: [bool; 256] = {
         table[b as usize] = true;
         b += 1;
     }
-    let special = b"|&;'\"\\{}$`()<>*?";
+    let special = b"|&;'\"\\{}$`()<>*?~";
     let mut i = 0;
     while i < special.len() {
         table[special[i] as usize] = false;
@@ -1528,7 +1559,16 @@ fn check_contradictions(refs: &[(Ref, usize)]) -> Result<(), ParseError> {
 /// that works). The error has a byte offset when there is one place to point
 /// at.
 pub fn parse(src: &str) -> Result<Template, ParseError> {
-    let template = parse_for_run(src)?;
+    let (template, tildes) = parse_with_tildes(src)?;
+    // Only here, not in `parse_for_run`: a stored alias made before this rule
+    // (by rea 0.7 or earlier) passes such a tilde literally, and must keep
+    // running after an upgrade. `patch` and `check` will still point it out.
+    if let Some(&offset) = tildes.first() {
+        return Err(ParseError::new(
+            offset,
+            "`~` is not expanded here; use `{$HOME}` for the home directory, or write `\\~` (or quote it) to pass it literally",
+        ));
+    }
     let arity = compute_arity(&template.shape)?;
     // Freshly made, so the cell is empty and this can't fail.
     let _ = template.arity.set(arity);
@@ -1552,10 +1592,23 @@ pub fn parse(src: &str) -> Result<Template, ParseError> {
 /// # Errors
 ///
 /// As for [`parse`], except that a template no count satisfies is accepted;
-/// running it then fails with a wrong-count error whatever the count.
+/// running it then fails with a wrong-count error whatever the count. A
+/// tilde a shell might expand is also accepted and passed literally, as it
+/// was before [`parse`] refused it.
 pub fn parse_for_run(src: &str) -> Result<Template, ParseError> {
+    parse_with_tildes(src).map(|(template, _)| template)
+}
+
+/// The shared part of [`parse`] and [`parse_for_run`]: parse without the
+/// arity search, and return the offsets of tildes a shell might expand,
+/// which only [`parse`] refuses.
+fn parse_with_tildes(src: &str) -> Result<(Template, Vec<usize>), ParseError> {
     // Lex fully first; the parser then never deals with characters.
-    let Lexed { tokens, refs } = lex(src)?;
+    let Lexed {
+        tokens,
+        refs,
+        tildes,
+    } = lex(src)?;
     // An empty or all-whitespace template has no command to run.
     if tokens.is_empty() {
         return Err(ParseError::new(0, "empty template"));
@@ -1588,13 +1641,14 @@ pub fn parse_for_run(src: &str) -> Result<Template, ParseError> {
         });
         shape.add(&Ref::Multi(rest, Format::default()));
     }
-    Ok(Template {
+    let template = Template {
         head,
         tail,
         implicit_rest,
         shape,
         arity: std::cell::OnceCell::new(),
-    })
+    };
+    Ok((template, tildes))
 }
 
 /// A slice as written: its start and end, either one optional.
@@ -2895,6 +2949,39 @@ mod tests {
     }
 
     #[test]
+    fn tildes_a_shell_might_expand_are_refused() {
+        // Where some shell would expand it: refused, pointing at the tilde.
+        for (src, offset) in [
+            ("echo ~/x", 5),
+            ("echo ~", 5),
+            ("echo X=~/x", 7),
+            ("echo --dir=~/x", 11),
+            ("echo PATH=a:~/b", 12),
+        ] {
+            let err = parse(src).expect_err(src);
+            assert_eq!(err.offset, Some(offset), "{src}");
+            assert!(err.message.contains("{$HOME}"), "{src}: {}", err.message);
+        }
+        // Anywhere else, or quoted or escaped, it is literal text.
+        for (src, word) in [
+            ("echo a~b", "a~b"),
+            ("echo x~", "x~"),
+            ("echo a:~/b", "a:~/b"),
+            (r"echo \~/x", "~/x"),
+            ("echo '~/x'", "~/x"),
+            ("echo \"~/x\"", "~/x"),
+            ("echo ''~", "~"),
+        ] {
+            assert_eq!(argv(src, &[]), ["echo", word], "{src}");
+        }
+        // A stored alias made before the rule keeps running: the stub's parse
+        // passes the tilde through, as it always did.
+        let template = parse_for_run("echo ~/x").unwrap();
+        let plan = template.expand("t", &[]).unwrap();
+        assert_eq!(plan.as_simple().unwrap()[1], "~/x");
+    }
+
+    #[test]
     fn end_rule_is_spelled_out() {
         // Whoever writes an always-empty slice gets the rule with the error,
         // with the slice quoted as written: a `{1..` start is stored as no
@@ -3412,13 +3499,13 @@ mod tests {
     fn ordinary_runs_stop_at_everything_special() {
         // Every character the lexer gives meaning to ends a run, as do
         // whitespace, control characters and non-ASCII.
-        for c in "|&;'\"\\{}$`()<>*? \t\n\x01é\u{a0}".chars() {
+        for c in "|&;'\"\\{}$`()<>*?~ \t\n\x01é\u{a0}".chars() {
             let text = format!("ab{c}cd");
             assert_eq!(ordinary_run(&text), 2, "{c:?}");
         }
         assert_eq!(
-            ordinary_run("./dir-name/trueZ.x_y+z=1,2@3~4%5^6#7!8[9]:"),
-            42
+            ordinary_run("./dir-name/trueZ.x_y+z=1,2@3%5^6#7!8[9]:"),
+            40
         );
         assert_eq!(ordinary_run(""), 0);
         // Runs and single quotes give the same words as before.

@@ -89,6 +89,8 @@ Template syntax:
 
   $ outside {$NAME}, backticks, globs, redirection, ( ) and a lone & are errors rather than
   passed through; quote or escape them to pass them literally.
+  So is ~ where a shell might expand it (starting a word, after =, or after :
+  in a word with =): {$HOME} is the home directory, \\~ or '~' a literal tilde.
 
 Examples:
   rea new mkvize 'ffmpeg -i {1} -y -c:v copy -c:a copy {1}.mkv'
