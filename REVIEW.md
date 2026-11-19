@@ -17,7 +17,8 @@ the log because they often belong in a "Constraint on change" comment.
   the review conversation (not in this repo). Only the parts that came up while
   comparing them with rea were read; they have not had a full pass.
 - **Environment for every test and trace**: x86_64, glibc, Rust 1.97.0, debug
-  build unless noted. musl has not been tested.
+  build unless noted, run as root unless noted (Q4 and B9 were run as an
+  unprivileged user). musl has not been tested.
 
 ## Decisions pending
 
@@ -219,6 +220,36 @@ code that is about to change.
 - **Status**: confirmed by reading. Low impact.
 - **Fix**: say so in `quote`'s doc, or mark words that were changed by the
   lossy conversion.
+
+### B9. A missing command exits 126, not 127, if `PATH` has an unsearchable directory
+
+- **Where**: `crates/core/src/run.rs`, `spawn_failure_code` (line 51) and
+  `report_spawn_failure` (line 61), for both `exec_single` and pipeline
+  stages.
+- **Claim**: "127 for "not found", 126 for anything else (permissions, bad
+  format)".
+- **Evidence**: run as an unprivileged user with a `PATH` containing
+  `/root/.local/bin` (not searchable by that user):
+
+  | Command | Message | Exit |
+  |---|---|---|
+  | `rea eval no-such-command-rea` | `Permission denied (os error 13)` | 126 |
+  | `rea eval 'no-such-command-rea \| cat'` | `Permission denied (os error 13)` | 126 |
+  | `bash -c no-such-command-rea` | `command not found` | 127 |
+  | `sh -c no-such-command-rea` (dash) | `Permission denied` | 127 |
+
+  With a `PATH` the user can search, rea says "command not found" and exits
+  127. A single `chmod 000` directory on `PATH` reproduces it. glibc's
+  `execvp` and `posix_spawnp` return `EACCES` when any directory tried gave
+  `EACCES`, even if no such file exists anywhere, and rea maps every error but
+  `ENOENT` to 126. The integration test `missing_command_is_127` fails in this
+  setup.
+- **Status**: confirmed. Realistic: `su` without `-` keeps the caller's
+  `PATH`, so root's `PATH` entries under `/root` reach an ordinary user.
+- **Fix**: match bash. Report 126 only when an executable candidate was found
+  but couldn't be run, and 127 with "command not found" otherwise. That needs
+  rea's own `PATH` search before exec (as `find_alias` already does for
+  `explain`), or a check after `EACCES` for whether any candidate file exists.
 
 ## I: implementation
 
@@ -586,10 +617,12 @@ have had no full pass.
   handles that case, decides whether removing `ensure_standard_fds` is safe
   there. Run `make test-static` with the call removed, plus the B1 cases.
 - **Q3.** Run Miri on the arena (I2).
-- **Q4.** The review environment runs as root, so
-  `save_refuses_a_file_it_may_not_write` skipped itself (`tests/cli.rs:962`)
-  and the read-only refusal in `replace` was not exercised. Run the suite as an
-  ordinary user before relying on it.
+- **Q4.** (Answered.) The review environment runs as root, so
+  `save_refuses_a_file_it_may_not_write` skipped itself at first. The test
+  binaries were then run as a new unprivileged user (`useradd reatest`,
+  `runuser -u reatest`). That test ran and passed, and so did the other 53 and
+  all 51 unit tests, once `PATH` held only directories the user could search.
+  With the inherited `PATH`, `missing_command_is_127` failed; see B9.
 
 ## Checked and holds
 
@@ -611,6 +644,8 @@ have had no full pass.
 - **`replace.rs`'s temporary and backup files can't be redirected** by a
   planted name, because `create_unique` uses `create_new` (`O_CREAT|O_EXCL`),
   which refuses existing names, symlinks included. By reading.
+- **`save` refuses a read-only file without changing it or leaving a
+  backup**, run as an unprivileged user (Q4).
 - **`merge` numbers lines the way `parse` does**: both treat `\n` and `\r\n`
   as line ends and nothing else, as the comment at `aliasfile.rs:261` says. By
   reading.
