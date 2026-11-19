@@ -1,15 +1,37 @@
 # Review log
 
-Findings from reviewing rea (plus the earlier C++ runtime and Python generator)
-for wrong behavior, incorrect implementation, and comments, names and
-whitespace. Each entry is checked before it is fixed; refuted suspicions stay
-in the log because they often belong in a "Constraint on change" comment.
+Findings about wrong behavior, incorrect implementation, and comments, names
+and whitespace in rea, plus a few in the earlier C++ runtime and Python
+generator. Each entry is checked before it is fixed. Refuted suspicions stay in
+the log because they often belong in a "Constraint on change" comment.
 
-- Reviewed at: `f8c0dd4` (v0.7.3, "Merge branch 'save'")
-- Environment for every test below: x86_64, glibc, Rust 1.97.0, debug build
-  unless noted. musl has not been tested.
-- C++ and Python files: `alias_runtime.hpp` and `alias_maker.py` as attached to
-  the review conversation (not in this repo).
+## Scope
+
+- **Commit**: `f8c0dd4` (v0.7.3, "Merge branch 'save'"). Line numbers refer to
+  this commit.
+- **Full pass**: every file under `crates/` (both crates, source and tests,
+  about 7,600 lines including manifests), read start to end for this log.
+- **Not reviewed**: `README.md`, `TODO.md`, `Makefile`, `aliases.txt` and
+  `bench/`, except where an entry quotes them.
+- **C++ and Python**: `alias_runtime.hpp` and `alias_maker.py` as attached to
+  the review conversation (not in this repo). Only the parts that came up while
+  comparing them with rea were read; they have not had a full pass.
+- **Environment for every test and trace**: x86_64, glibc, Rust 1.97.0, debug
+  build unless noted. musl has not been tested.
+
+## Decisions pending
+
+These entries are confirmed, but the fix depends on which behavior you want:
+
+- **B1**: remove `ensure_standard_fds`, so pipelines match sh?
+- **B4**: should `new` and `patch` follow a symlinked alias, as `save` follows
+  a symlinked alias file?
+- **B5**: reject `~`, `#` and `[` like the other shell syntax, or document
+  them as literal?
+- **B6**: document the SIGPIPE deviation, or keep the caller's ignore in the
+  stages?
+- **B7**: print the usage line only for wrong argument counts, or for every
+  error?
 
 ## How to use this log
 
@@ -93,6 +115,111 @@ code that is about to change.
 - **Status**: suspected.
 - **Fix**: trace the C++ with the call removed, using the cases from B1.
 
+### B3. A symlink at `write_alias`'s temporary name redirects the write
+
+- **Where**: `crates/rea/src/cli.rs`, `write_alias` (line 615) and
+  `write_executable` (line 546).
+- **Claim**: "a half-written file must never be left under the alias's name."
+  (The rename is safe; the temporary file is not.)
+- **Evidence**: the temporary name is fixed (`.{name}.rea-tmp`) and opened with
+  `create(true).truncate(true)`, which follows symlinks. Test: with
+  `bin/.x.rea-tmp` a symlink to a file `victim`, `rea new x true -o bin`
+  printed "created", overwrote `victim` with the stub (now an ELF file,
+  7.9 MB), and left `bin/x` as a symlink to `victim`.
+- **Status**: confirmed. Exploiting it needs write access to the alias
+  directory, so the security impact in a user's own `~/.local/bin` is small;
+  the bigger problem is that a stale or planted entry silently damages another
+  file.
+- **Fix**: create the temporary file the way `replace.rs` does
+  (`create_unique`, which uses `create_new` and a random suffix), so nothing
+  planted under the name is followed. See also I4.
+
+### B4. `new` and `patch` replace a symlinked alias with a regular file
+
+- **Where**: `crates/rea/src/cli.rs`, `write_alias` (rename at line 616).
+- **Claim**: none. `save` follows a symlink on purpose ("A symlink is followed,
+  so the file it points to is the one updated"), but `new` and `patch` don't
+  say what they do with one.
+- **Evidence**: test: `bin/y` a symlink to `dotfiles/y` (an alias holding
+  `true`); `rea new y false -o bin` printed "updated", replaced the link with a
+  regular file holding `false`, and left `dotfiles/y` holding `true`.
+- **Status**: confirmed. Whether this is wrong is a decision: keeping aliases
+  in a dotfiles directory and linking them is a plausible setup, and `save`
+  already treats links the other way.
+- **Fix** (decision pending): follow the link and replace its target, as
+  `save` does, or document the current behavior in `new`'s and `patch`'s help.
+
+### B5. `~`, `#` and `[...]` pass through literally where sh would expand them
+
+- **Where**: `crates/core/src/template.rs`, module doc (line 47) and the
+  rejected-character arm of `lex` (line 1209).
+- **Claim**: "Characters that a shell treats specially but this language does
+  not ... are rejected unless escaped or quoted. ... Accepting them silently
+  would be worse."
+- **Evidence**: `*` and `?` are rejected, but `[` is not, and neither are `~`
+  at the start of a word or `#` starting a word.
+
+  | Template | rea | sh |
+  |---|---|---|
+  | `echo ~` | `~` | `/root` |
+  | `echo x # note` | `x # note` | `x` |
+  | `echo [ab]1` (files a1, b1 present) | `[ab]1` | `a1 b1` |
+
+  The test `ordinary_runs_stop_at_everything_special` (line 3276) lists
+  `~#![]` as ordinary text, so this is current, tested behavior.
+- **Status**: confirmed. The behavior contradicts the module's stated
+  principle; whether to reject them is a decision. `~` in particular is a
+  likely habit (`cp {1} ~/backup`).
+- **Fix** (decision pending): reject `~` and `#` at the start of a word and
+  `[` anywhere, with the same "quote or escape it" message, and update the
+  test and the module doc. Or keep them and document the exception.
+
+### B6. Pipeline stages get SIGPIPE at its default even when the caller ignored it
+
+- **Where**: `crates/core/src/run.rs`, `ignore_sigpipe` (line 271), and the
+  `exec_single` doc (line 92).
+- **Claim**: `exec_single` keeps an inherited SIGPIPE ignore "which is what
+  POSIX shells do with signals ignored on entry". `ignore_sigpipe` says
+  "Children are unaffected: `Command` resets SIGPIPE to the default in each
+  one."
+- **Evidence**: alias `yes | head -1`. Run normally, `yes` was killed by
+  SIGPIPE, as expected. Run under `sh -c "trap '' PIPE; ..."`, `yes` was still
+  killed by SIGPIPE; under `sh` it would inherit the ignore, get `EPIPE`, and
+  exit with an error. So the pipeline path deviates from sh where the
+  single-command path matches it.
+- **Status**: confirmed. The reset itself is what `ignore_sigpipe` documents;
+  what's missing is the deviation, which the matching SIGCHLD case does
+  document ("Deviation from sh: the stages get SIGCHLD at its default too").
+- **Fix**: add a "Deviation from sh" paragraph to `ignore_sigpipe` (or decide
+  to restore the inherited disposition in the stages).
+
+### B7. The template is printed as a usage line for every expansion error
+
+- **Where**: `crates/core/src/lib.rs:50-55`, `run_parsed`.
+- **Claim**: "Wrong argument counts get the template as a usage line, since the
+  template is the most precise description of what the alias wants."
+- **Evidence**: `rea eval 'cat {1:F}' /no/such` and
+  `rea eval 'echo {$REA_NOPE}'` both print `    rea = <template>` after the
+  error. The code prints it for any `ExpandError`.
+- **Status**: confirmed. Code and comment disagree; which is intended is a
+  decision. For a failed file check the usage line adds nothing.
+- **Fix** (decision pending): print the line only for `WrongArgCount` and
+  `EmptyCommand`, or change the comment to say it is printed for every error
+  and why.
+
+### B8. `explain` output isn't pasteable for non-UTF-8 arguments
+
+- **Where**: `crates/rea/src/cli.rs`, `quote` (line 1063).
+- **Claim**: "Quote a word so the printed command can be pasted into sh (or a
+  template)."
+- **Evidence**: reading. `quote` starts with `to_string_lossy()`, so a byte
+  such as `\xe9` prints as U+FFFD, and pasting the line passes a different
+  argument. rea itself passes such arguments through byte for byte
+  (`non_utf8_arguments_survive`).
+- **Status**: confirmed by reading. Low impact.
+- **Fix**: say so in `quote`'s doc, or mark words that were changed by the
+  lossy conversion.
+
 ## I: implementation
 
 ### I1. `relations_into` says it reuses a buffer but allocates one on every call
@@ -138,6 +265,91 @@ code that is about to change.
   `const _: () = assert!(std::mem::offset_of!(Arena, bytes) % 16 == 0);`
   and route `align > 16` to `System`. Update the field-order constraint
   comment to mention the padding.
+
+### I4. `write_alias` doesn't sync before renaming, and its temporary name can collide
+
+- **Where**: `crates/rea/src/cli.rs`, `write_alias` (lines 612-619) and
+  `write_executable` (line 546).
+- **Claim**: "a half-written file must never be left under the alias's name."
+- **Evidence**: reading. `write_executable` returns after `write_all` without
+  `sync_all`, and the directory isn't synced after the rename. After a crash
+  the rename can be on disk before the data, leaving an empty or partial
+  executable under the alias's name on file systems that don't order the two.
+  Two `rea` processes writing the same alias also share one temporary name.
+  `replace.rs` already handles both (unique `create_new` names, `sync_all` on
+  the file and the directory).
+- **Status**: confirmed by reading; not reproduced.
+- **Fix**: reuse `replace.rs`'s helpers for alias files (with mode 0755), which
+  also fixes B3.
+
+### I5. `save` doesn't enforce the contract `merge` documents for its input
+
+- **Where**: `crates/core/src/aliasfile.rs:232` (`merge`'s doc) and
+  `crates/rea/src/cli.rs:941` (`distinct_aliases`).
+- **Claim**: "`aliases` must have unique, valid names and single-line,
+  non-blank templates; the caller checks this."
+- **Evidence**: reading. `distinct_aliases` checks uniqueness and line breaks,
+  not name validity, reserved names (`rea`, `rea-stub`) or blank templates. The
+  names come from alias slots, which `rea` validates when it writes them, but
+  `slot::encode` itself only refuses newlines, so a stub patched by anything
+  else (or damaged) can hold a name such as `a = b`. `merge` would append
+  `a = b = <template>`, which reads back as a different alias.
+- **Status**: confirmed by reading. Reaching it needs a slot that `rea` did not
+  write.
+- **Fix**: run `aliasfile::name_problem`, the reserved-name check and a
+  non-blank check in `distinct_aliases`, reporting them like its other
+  problems.
+
+### I6. `realloc` copies when shrinking a block that isn't the last one
+
+- **Where**: `crates/rea/src/bin/rea-stub.rs`, `Arena::realloc` (line 150).
+- **Evidence**: reading. A shrink always fits where the block is, but unless
+  the block is the most recent allocation, the code allocates a new block and
+  copies. Correct, just unnecessary.
+- **Status**: confirmed by reading. Not measured; shrinking is rare in an alias
+  run.
+- **Fix**: return `ptr` when `new_size <= layout.size()`. Optional.
+
+### I7. Runtime behavior is tested through `rea eval`, not through the stub
+
+- **Where**: `crates/rea/tests/cli.rs:4-5` and most runtime tests.
+- **Claim**: "`rea eval TEMPLATE ARGS...` ... runs a template exactly as a
+  patched alias would."
+- **Evidence**: reading. `rea eval` starts through std's runtime, which reopens
+  closed fds 0-2 before `main`, and `rea`'s `main` sets SIGPIPE to its default.
+  The stub does neither, and parses with `parse_for_run` instead of `parse`.
+  Signal tests (SIGINT, SIGCHLD, the SIGPIPE in `yes | head`) therefore don't
+  exercise the stub's startup; B6, for example, would look the same through
+  `eval` for a different reason. Four tests run a real alias
+  (`new_creates_a_standalone_alias_and_updates_only_on_change`,
+  `patch_writes_only_changes_and_prunes_removed_aliases`,
+  `alias_runs_with_standard_fds_closed` and
+  `alias_handles_arguments_beyond_its_arena`), and none of them tests signal
+  handling.
+- **Status**: confirmed by reading.
+- **Fix**: correct the module doc, and run the signal tests against an alias
+  made with `rea new` as well as through `eval`.
+
+### I8. `crates/rea/Cargo.toml` has a release profile that Cargo ignores
+
+- **Where**: `crates/rea/Cargo.toml:33-40`.
+- **Evidence**: `cargo build` prints "warning: profiles for the non root
+  package will be ignored, specify profiles at the workspace root". The root
+  `Cargo.toml` has the same settings, so nothing is lost.
+- **Status**: confirmed.
+- **Fix**: delete the duplicate.
+
+### I9. `find_alias` treats any execute bit as executable
+
+- **Where**: `crates/rea/src/cli.rs:1010`.
+- **Claim**: "Executable regular files only, as the shell's search".
+- **Evidence**: reading. `mode & 0o111 != 0` accepts a file that only its
+  group or others may execute; the shell checks whether this user can execute
+  it (`access(X_OK)` or the exec itself). The lookup can then pick a file the
+  shell would skip.
+- **Status**: confirmed by reading. Low impact.
+- **Fix**: use `libc::access(path, X_OK)`, or note the approximation in the
+  comment.
 
 ## C: stale or wrong comments
 
@@ -232,6 +444,82 @@ code that is about to change.
     claims", but Rest also steps around slices.
 - **Status**: confirmed by reading.
 
+### C11. `SCAN_LIMIT`'s doc doesn't list `save`
+
+- **Where**: `crates/rea/src/cli.rs:25`, "directory scans (`list`,
+  `patch --prune`)".
+- **Evidence**: `save` also calls `scan` (line 867).
+- **Status**: confirmed by reading.
+- **Fix**: add `save`, or say "directory scans (see `scan`)".
+
+### C12. `replace`'s doc says its temporary names can't be predicted
+
+- **Where**: `crates/rea/src/replace.rs:20-22`, "under names nobody else can
+  predict or have taken".
+- **Evidence**: `suffix`'s own doc (line 183) says it is "Not cryptographic",
+  built from the clock and process ID. The safety comes from `create_new`,
+  which refuses a name that exists, so a predicted name does no harm.
+- **Status**: confirmed by reading.
+- **Fix**: "under new names that nothing else can have created first".
+
+### C13. `MAX_POSITION`'s timing example isn't the worst case
+
+- **Where**: `crates/core/src/template.rs:801`, "Checking `{1..5000} {5000}`
+  takes ~0.25 second on a release build."
+- **Evidence**: measured `rea new` on a release build: `{1..5000} {5000}` took
+  0.14-0.16 s, consistent with the doc. Each count also compares every pair of
+  slices, so many distinct slices take longer: 50 slices
+  (`{1..5000} {2..5000} ...`) 0.53 s, 100 slices 0.89 s, 200 slices (2.3 KB,
+  still fits an alias) 1.75 s.
+- **Status**: confirmed. The search is still bounded; the doc reads as if the
+  example were the bound.
+- **Fix**: say the cost also grows with the number of distinct slices, with
+  the measured example.
+
+### C14. The integration tests' module doc is out of date
+
+- **Where**: `crates/rea/tests/cli.rs:4-6`.
+- **Evidence**: "exactly as a patched alias would" (see I7). The assumed
+  userland list omits commands the tests use: `seq`, `touch`, `rm`, `wc`,
+  `true`, `false` (and `mkfifo` in `template.rs`'s tests).
+- **Status**: confirmed by reading.
+- **Fix**: update both.
+
+### C15. Test helpers avoid a libc dependency the tests already have
+
+- **Where**: `crates/rea/tests/cli.rs:176-180` (`libc_sigterm`) and line 224
+  (`Some(2)` for SIGINT).
+- **Claim**: "without a libc dev-dependency just for one constant".
+- **Evidence**: `crates/rea/Cargo.toml` lists `libc` as a dev-dependency, and
+  `eval_with_sigchld_ignored` (line 236) calls `libc::signal`.
+- **Status**: confirmed.
+- **Fix**: use `libc::SIGTERM` and `libc::SIGINT`, and delete `libc_sigterm`.
+
+### C16. The root manifest says the release profile changes no behavior
+
+- **Where**: `Cargo.toml:21`, "None of these change behavior."
+- **Evidence**: `panic = "abort"` changes what a panic does (abort with
+  SIGABRT instead of unwinding and exiting 101). The next comment says so.
+- **Status**: confirmed by reading.
+- **Fix**: "None of these change behavior, except that a panic aborts."
+
+### C17. Small wording, spelling and formatting fixes
+
+- `crates/rea/src/cli.rs:1062`, "unless it is plainly safe": cut "plainly"
+  (style rule), e.g. "unless every character is in the safe set below".
+- British spellings among American ones: `replace.rs:190` "neighbours",
+  `template.rs:760` "neighbouring". Everything else uses American spelling
+  ("behavior").
+- Non-ASCII literals in source, which the style rules ask to escape with a
+  comment: `template.rs:3138` (an A with diaeresis in a variable name),
+  `:3271` and `:3285` (e with acute accent). For example `\u{e9}` with
+  `// e with acute accent`.
+- `crates/core/src/slot.rs:12`: the `len` row of the layout table is wider
+  than the header row, so the table's columns don't line up.
+- `crates/rea/src/main.rs:13`, "(see there)": name the function
+  (`restore_default_sigpipe`).
+- **Status**: confirmed.
+
 ## D: missing intent comments and names (do last)
 
 Places where a comment stating what the code computes would read faster than
@@ -270,9 +558,22 @@ the code, or where a name hides its units.
 | `alias_maker.py:947` | numbers up to the highest that neither a placeholder nor a slice covers |
 | `alias_maker.py:670` | the smallest argument count at which the slice is valid |
 | `alias_maker.py:782` | each `{N}` and `{-N}` as a one-position interval |
+| `cli.rs:959` `distinct_aliases`, `kept.trim() != template.trim()` | templates that differ only in surrounding whitespace are the same once written to the file, which trims them |
+| `cli.rs:774, 801, 806, 982` `failures += fail(...)` | relies on `fail` returning 1; say so once, or count with `failures += 1` after `fail` |
+| `replace.rs:55` and `:132`, the immediately called closures | what each group of I/O steps is for, and that any error in it lands in one match |
 
-This table covers only the code read so far. `template.rs`, `cli.rs`,
-`replace.rs` and the tests have not had a full pass.
+The C++ and Python rows come from the parts of those files that were read; they
+have had no full pass.
+
+### D3. Names
+
+- `template.rs:2877`: the test helper `scratch(tag)` (a temporary directory)
+  shares its name with the `Scratch` struct (reusable buffers) in the same
+  file. Rename the helper, e.g. `temp_dir(tag)`. `tests/cli.rs` has a helper of
+  the same name; renaming both keeps them consistent.
+- `tests/cli.rs:1351`: `alias_runs_with_standard_fds_closed` also tests
+  non-UTF-8 arguments (lines 1377-1393). Split it, or rename it to cover both.
+  If B1 removes `ensure_standard_fds`, this test changes anyway.
 
 ## Q: open questions
 
@@ -285,6 +586,10 @@ This table covers only the code read so far. `template.rs`, `cli.rs`,
   handles that case, decides whether removing `ensure_standard_fds` is safe
   there. Run `make test-static` with the call removed, plus the B1 cases.
 - **Q3.** Run Miri on the arena (I2).
+- **Q4.** The review environment runs as root, so
+  `save_refuses_a_file_it_may_not_write` skipped itself (`tests/cli.rs:962`)
+  and the read-only refusal in `replace` was not exercised. Run the suite as an
+  ordinary user before relying on it.
 
 ## Checked and holds
 
@@ -298,3 +603,14 @@ This table covers only the code read so far. `template.rs`, `cli.rs`,
   `CLONE_VM|CLONE_VFORK`.
 - **`Arena::alloc` must round the address, not the offset**, with the current
   struct layout. Looks like a simplification candidate but is not (see D1, I3).
+- **Pipeline stages get SIGPIPE at its default** although the supervisor
+  ignores it (`ignore_sigpipe`'s claim). Evidence: in alias `yes | head -1`,
+  `yes` was killed by SIGPIPE. See B6 for the undocumented consequence.
+- **`MAX_POSITION`'s timing for its own example** (C13): 0.14-0.16 s measured
+  against "~0.25 second".
+- **`replace.rs`'s temporary and backup files can't be redirected** by a
+  planted name, because `create_unique` uses `create_new` (`O_CREAT|O_EXCL`),
+  which refuses existing names, symlinks included. By reading.
+- **`merge` numbers lines the way `parse` does**: both treat `\n` and `\r\n`
+  as line ends and nothing else, as the comment at `aliasfile.rs:261` says. By
+  reading.
